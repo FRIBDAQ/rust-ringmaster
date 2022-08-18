@@ -150,7 +150,9 @@ pub mod tcllist {
                 .add_sublist(Box::new(sub2))
                 .add_element("2")
                 .add_element("3");
-            l.add_element("whoo").add_sublist(Box::new(sub1)).add_element("hoo");
+            l.add_element("whoo")
+                .add_sublist(Box::new(sub1))
+                .add_element("hoo");
             assert_eq!("{whoo {1 {a b c } 2 3 } hoo }", format!("{}", l));
         }
     }
