@@ -9,3 +9,4 @@ edition = "2018"
 nscldaq_ringbuffer = "0.6.0"
 clap = "^2.27.1"
 simple-logging = "2.0.2"
+
