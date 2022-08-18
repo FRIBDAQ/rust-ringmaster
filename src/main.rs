@@ -179,8 +179,7 @@
 //!         *  The consumer's process id
 //!         *  The number of bytes of backlog for that consumer.
 //!
-
-use nscldaq_ringmaster::tcllist;
+pub mod nscldaq_ringbuffer {}
 fn main() {
     println!("Hello, world!");
 }
