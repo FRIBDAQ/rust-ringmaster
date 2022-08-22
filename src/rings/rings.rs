@@ -1,7 +1,9 @@
 pub mod rings {
     use std::collections::HashMap;
     use std::sync;
+    use std::sync::{Arc, Mutex};
     use std::thread;
+    use std::time::Duration;
     use sysinfo::{Pid, PidExt, ProcessExt, System};
     ///
     /// This enum provides information about the
@@ -23,9 +25,10 @@ pub mod rings {
     /// *   should_run - is the flag that will be initialized to ```true```
     /// and set to false to request the thread exit.
     ///
+
     pub struct ClientMonitorInfo {
         handle: Option<thread::JoinHandle<()>>,
-        should_run: sync::atomic::AtomicBool,
+        should_run: bool,
         client_info: Client,
     }
     impl ClientMonitorInfo {
@@ -41,7 +44,7 @@ pub mod rings {
         pub fn new(client: Client) -> ClientMonitorInfo {
             ClientMonitorInfo {
                 handle: None,
-                should_run: sync::atomic::AtomicBool::new(true),
+                should_run: true,
                 client_info: client,
             }
         }
@@ -61,6 +64,7 @@ pub mod rings {
         pub fn set_monitor(&mut self, handle: thread::JoinHandle<()>) {
             self.handle = Some(handle);
         }
+
         ///
         /// stop_monitor
         ///    Requests that the monitor thread stop and blocks
@@ -69,18 +73,43 @@ pub mod rings {
         /// Note that if the handle is not set yet (the thread not spawned),
         /// we're just going to return right away since it's assumed the
         /// thread never started.
+        /// This juggling is done because we need to avoid deadlock
+        /// in the thread.
+        /// The me parameter is a arc/mutext encapsulating the
+        /// client info to operate on.
         ///
-        pub fn stop_monitor(&mut self) {
-            self.should_run
-                .store(false, sync::atomic::Ordering::Relaxed);
+        pub fn stop_monitor(me: &mut Arc<Mutex<Self>>) {
+            me.lock().unwrap().should_run = false;
             //
             // Note that the code below leaves self.handle = None
             // which is cool since we can then support multiple stop_monitor
             // calls just fine.
 
-            if self.handle.is_some() {
-                self.handle.take().expect("Bug").join().unwrap();
+            if me.lock().unwrap().handle.is_none() {
+                me.lock().unwrap().should_run = true;
+                return;
             }
+            // Key point this loop allows the mutex to be
+            // unlocked from time to time.
+            loop {
+                let lock = me.lock().unwrap();
+                if let Some(handle) = &lock.handle {
+                    if handle.is_finished() {
+                        break;
+                    } else {
+                        thread::sleep(Duration::from_millis(100));
+                    }
+                }
+            }
+            // Now we can join:
+
+            me.lock().unwrap().handle.take().unwrap().join().unwrap();
+        }
+        ///
+        /// Determine if a monitor should keep running:
+        ///
+        fn keep_running(&self) -> bool {
+            return self.should_run;
         }
     }
     /// Provides all of the information we, the ringmaster, need to know
@@ -88,7 +117,7 @@ pub mod rings {
     ///
     pub struct RingBufferInfo {
         ring_file: String,
-        client_monitors: HashMap<u32, Box<ClientMonitorInfo>>,
+        client_monitors: HashMap<u32, Arc<Mutex<ClientMonitorInfo>>>,
     }
     impl RingBufferInfo {
         #[cfg(target_os = "linux")]
@@ -118,12 +147,15 @@ pub mod rings {
         /// Add a new client to the ring buffer.
         /// The thread must have been started (if there will be one)
         /// by our client.
-        pub fn add_client(&mut self, client: Box<ClientMonitorInfo>) -> &mut RingBufferInfo {
-            let key = match client.client_info {
+        pub fn add_client(
+            &mut self,
+            client: &Arc<Mutex<ClientMonitorInfo>>,
+        ) -> &mut RingBufferInfo {
+            let key = match client.lock().unwrap().client_info {
                 Client::Producer { pid } => pid,
                 Client::Consumer { pid, slot } => pid,
             };
-            self.client_monitors.insert(key, client);
+            self.client_monitors.insert(key, Arc::clone(client));
 
             self
         }
@@ -136,7 +168,7 @@ pub mod rings {
         pub fn remove_client(&mut self, pid: u32) -> &mut RingBufferInfo {
             let info = self.client_monitors.remove(&pid);
             if let Some(mut client) = info {
-                client.stop_monitor();
+                ClientMonitorInfo::stop_monitor(&mut client);
                 Self::kill_pid(pid);
             }
             self
@@ -158,5 +190,72 @@ pub mod rings {
         }
     }
     #[cfg(test)]
-    mod tests {}
+    // Tests for ClienMonitorInfo:
+
+    mod clmoninfo_tests {
+        use super::*;
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+        use std::thread::sleep;
+        use std::time::Duration;
+
+        #[test]
+        fn new_1() {
+            let c = Client::Producer { pid: 124 };
+            let info = ClientMonitorInfo::new(c);
+            assert!(info.handle.is_none());
+            if let Client::Producer { pid } = info.client_info {
+                assert_eq!(124, pid);
+            } else {
+                assert!(false, "Wrong type of client encapsulated");
+            }
+            assert!(info.should_run);
+        }
+        #[test]
+        fn new_2() {
+            let c = Client::Consumer { pid: 123, slot: 3 };
+            let info = ClientMonitorInfo::new(c);
+            assert!(info.handle.is_none());
+            if let Client::Consumer { pid, slot } = info.client_info {
+                assert_eq!(123, pid);
+                assert_eq!(3, slot);
+            } else {
+                assert!(false, "Wrong type of client encapsulated");
+            }
+            assert!(info.should_run);
+        }
+        #[test]
+        fn set_monitor_1() {
+            let client = Client::Producer { pid: 1234 };
+            let mut info = ClientMonitorInfo::new(client);
+
+            info.set_monitor(thread::spawn(|| {}));
+            assert!(info.handle.is_some());
+            if let Some(h) = info.handle {
+                assert!(h.join().is_ok());
+            }
+        }
+        #[test]
+        fn stop_monitor_1() {
+            let client = Client::Producer { pid: 1234 };
+            let info = ClientMonitorInfo::new(client);
+            let mut my_safe = Arc::new(Mutex::new(info));
+            let safe_info = Arc::clone(&my_safe);
+            my_safe.lock().unwrap().set_monitor(thread::spawn(move || {
+                for i in 1..100 {
+                    println!("{}", i);
+                    if safe_info.lock().unwrap().keep_running() {
+                        println!("Sleeping again");
+                        sleep(Duration::from_millis(100));
+                    } else {
+                        println!("Exiting");
+                        return;
+                    }
+                }
+            }));
+            assert!(my_safe.lock().unwrap().should_run);
+            ClientMonitorInfo::stop_monitor(&mut my_safe);
+            assert!(!my_safe.lock().unwrap().should_run);
+        }
+    }
 }
