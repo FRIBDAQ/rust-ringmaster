@@ -13,5 +13,7 @@
 //! that represent threads that are monitoring client exits and
 //! the variable used to ask a thread to exit.  
 //!
+pub mod inventory;
 pub mod rings;
+pub use self::inventory::inventory::*;
 pub use self::rings::rings::*;

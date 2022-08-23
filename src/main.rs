@@ -1,5 +1,6 @@
 use clap::{App, Arg};
-use nscldaq_ringmaster::rings;
+use nscldaq_ringmaster::rings::inventory;
+use nscldaq_ringmaster::rings::rings;
 use nscldaq_ringmaster::tcllist;
 use std::fs;
 use std::io::Error;
