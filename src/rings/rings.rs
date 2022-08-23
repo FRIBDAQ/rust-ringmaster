@@ -117,7 +117,7 @@ pub mod rings {
     /// about a ringbuffer
     ///
     pub struct RingBufferInfo {
-        ring_file: String,
+        pub ring_file: String,
         client_monitors: HashMap<u32, Arc<Mutex<ClientMonitorInfo>>>,
     }
     impl RingBufferInfo {

@@ -1,7 +1,10 @@
 use clap::{App, Arg};
+use log::{info, trace, warn};
 use nscldaq_ringmaster::rings::inventory;
 use nscldaq_ringmaster::rings::rings;
 use nscldaq_ringmaster::tcllist;
+use simple_logging;
+use std::collections::HashMap;
 use std::fs;
 use std::io::Error;
 use std::process;
@@ -18,6 +21,12 @@ struct ProgramOptions {
 
 fn main() {
     let options = process_options();
+    simple_logging::log_to_file(&options.log_filename, log::LevelFilter::Info);
+    info!(
+        "Ringmaster doing inventory of existing rings on {}",
+        options.directory
+    );
+    let mut ring_inventory = inventory_rings(&options.directory);
     println!("Options {:#?}", options);
 }
 ///
@@ -106,7 +115,7 @@ fn process_options() -> ProgramOptions {
         // We need to be able to write to the file.  the
         // only way I know how to do that is test open the file:
 
-        let f = fs::OpenOptions::new().append(true).open(file);
+        let f = fs::OpenOptions::new().append(true).create(true).open(file);
 
         if f.is_err() {
             let error = f.err();
@@ -118,5 +127,15 @@ fn process_options() -> ProgramOptions {
 
     // Returnt he final value:
 
+    result
+}
+///
+/// inventory the rings in the specified directory, logging those
+/// that are not and are rings.
+///  The result is a hash map of RingBufferInfo indexed by ring name.
+///
+fn inventory_rings(directory: &str) -> HashMap<String, rings::rings::RingBufferInfo> {
+    let result = HashMap::<String, rings::rings::RingBufferInfo>::new();
+    inventory::inventory::inventory_rings(directory, &mut |name| {}, &mut |name| {});
     result
 }
