@@ -28,7 +28,7 @@ pub mod rings {
 
     pub struct ClientMonitorInfo {
         handle: Option<thread::JoinHandle<()>>,
-        should_run: bool,
+        pub should_run: bool,
         client_info: Client,
     }
     impl ClientMonitorInfo {
@@ -62,6 +62,7 @@ pub mod rings {
         ///  info.set_monitor(thread::spawn(|| {}));
         /// ```
         pub fn set_monitor(&mut self, handle: thread::JoinHandle<()>) {
+            self.should_run = true;
             self.handle = Some(handle);
         }
 
@@ -129,7 +130,7 @@ pub mod rings {
             }
         }
         #[cfg(not(target_os = "linux"))]
-        fn kill_pid(pid: u32) {} // Else can't on windows
+        fn kill_pid(pid: u32) {} // Else can't on windows but need fn for compiler
         ///
         ///  creates the object.  We initially have the ring file
         /// path and then an empty client monitors collection.
@@ -256,6 +257,181 @@ pub mod rings {
             assert!(my_safe.lock().unwrap().should_run);
             ClientMonitorInfo::stop_monitor(&mut my_safe);
             assert!(!my_safe.lock().unwrap().should_run);
+        }
+    }
+    #[cfg(test)]
+    mod ringbuf_info_tests {
+        use super::*;
+        use std::thread::sleep;
+        use std::time::Duration;
+        #[test]
+        fn new_1() {
+            let info = RingBufferInfo::new("ringname");
+            assert_eq!(String::from("ringname"), info.ring_file);
+            assert_eq!(0, info.client_monitors.len());
+        }
+        #[test]
+        fn add_1() {
+            // add client information with no overwrite.
+
+            let mut info = RingBufferInfo::new("ringbuffer");
+            let producer = ClientMonitorInfo::new(Client::Producer { pid: 1234 });
+            let arc = Arc::<Mutex<ClientMonitorInfo>>::new(Mutex::new(producer));
+            info.add_client(&arc);
+            assert_eq!(1, info.client_monitors.len());
+            if let Some(arc) = info.client_monitors.get(&1234) {
+                match arc.lock().unwrap().client_info {
+                    Client::Producer { pid } => {
+                        assert_eq!(1234, pid);
+                    }
+                    Client::Consumer { pid, slot } => {
+                        assert!(false, "Got consumer expected producer");
+                    }
+                }
+                assert!(arc.lock().unwrap().handle.is_none());
+                assert!(arc.lock().unwrap().should_run);
+            } else {
+                assert!(false, "Did not insert client into map");
+            }
+        }
+        #[test]
+        fn add_2() {
+            // Add a consumer client to the ring:
+            let mut info = RingBufferInfo::new("ringbuffer");
+            let consumer = ClientMonitorInfo::new(Client::Consumer { pid: 1234, slot: 2 });
+            let arc = Arc::<Mutex<ClientMonitorInfo>>::new(Mutex::new(consumer));
+            info.add_client(&arc);
+            assert_eq!(1, info.client_monitors.len());
+            if let Some(arc) = info.client_monitors.get(&1234) {
+                match arc.lock().unwrap().client_info {
+                    Client::Producer { pid } => {
+                        assert!(false, "Should have gotten consumer, got producer");
+                    }
+                    Client::Consumer { pid, slot } => {
+                        assert_eq!(1234, pid);
+                        assert_eq!(2, slot);
+                    }
+                }
+            } else {
+                assert!(false, "Did not insert client into map!");
+            }
+        }
+        #[test]
+        fn add_3() {
+            // add a consumer and producer - non colliding.
+
+            let mut info = RingBufferInfo::new("ringbuffer");
+            let producer = ClientMonitorInfo::new(Client::Producer { pid: 1111 });
+            let consumer = ClientMonitorInfo::new(Client::Consumer { pid: 1234, slot: 2 });
+
+            let arc_producer = Arc::new(Mutex::new(producer));
+            let arc_consumer = Arc::new(Mutex::new(consumer));
+
+            info.add_client(&arc_producer).add_client(&arc_consumer);
+
+            assert_eq!(2, info.client_monitors.len());
+
+            // we'll take it for granted that if inserted they're both
+            // ok based on add_1, and add_2
+
+            if let Some(p) = info.client_monitors.get(&1111) {
+                assert!(true);
+            } else {
+                assert!(false, "Producer did not get inserted");
+            }
+
+            if let Some(c) = info.client_monitors.get(&1234) {
+                assert!(true);
+            } else {
+                assert!(false, "Consumer did not get inserted");
+            }
+        }
+        #[test]
+        fn add_4() {
+            // Second add overwrites existing add..
+            let mut info = RingBufferInfo::new("ringbuffer");
+            let producer = ClientMonitorInfo::new(Client::Producer { pid: 1234 });
+            let consumer = ClientMonitorInfo::new(Client::Consumer { pid: 1234, slot: 2 });
+
+            let arc_producer = Arc::new(Mutex::new(producer));
+            let arc_consumer = Arc::new(Mutex::new(consumer));
+
+            info.add_client(&arc_producer).add_client(&arc_consumer); // should overwrite.
+
+            assert_eq!(1, info.client_monitors.len());
+            if let Some(c) = info.client_monitors.get(&1234) {
+                match c.lock().unwrap().client_info {
+                    Client::Producer { pid } => {
+                        assert!(false, "should have been a consumer");
+                    }
+                    Client::Consumer { pid, slot } => {
+                        assert_eq!(1234, pid);
+                        assert_eq!(2, slot);
+                    }
+                }
+            } else {
+                assert!(false, "There should be ! 1234 client but isn't");
+            }
+        }
+        #[test]
+        fn remove_1() {
+            // Remove is ok if there's no client with that pid
+            // to remove (silently does nothing)
+            let mut info = RingBufferInfo::new("ring");
+            info.remove_client(1234); // Should not panic.
+        }
+        #[test]
+        fn remove_2() {
+            // Remove when monitor process was not started works:
+            let mut info = RingBufferInfo::new("ringbuffer");
+            let producer = ClientMonitorInfo::new(Client::Producer { pid: 1234 });
+            let arc_producer = Arc::new(Mutex::new(producer));
+            info.add_client(&arc_producer).remove_client(1234);
+
+            // Should be an empty client list:
+
+            assert_eq!(0, info.client_monitors.len());
+        }
+        #[test]
+        fn remove_3() {
+            // Remove stops the monitor:
+
+            let mut info = RingBufferInfo::new("ringbuffer");
+            let producer = ClientMonitorInfo::new(Client::Producer { pid: 1234 });
+            let arc_producer = Arc::new(Mutex::new(producer));
+            let child_producer = Arc::clone(&arc_producer);
+            arc_producer
+                .lock()
+                .unwrap()
+                .set_monitor(thread::spawn(move || loop {
+                    if child_producer.lock().unwrap().should_run {
+                        sleep(Duration::from_millis(100));
+                    } else {
+                        return;
+                    }
+                }));
+            // Now if we remove the client it should stop the thread.
+
+            info.add_client(&arc_producer).remove_client(1234);
+            assert_eq!(0, info.client_monitors.len());
+        }
+        #[test]
+        fn remove_4() {
+            // Remove all clients.. in this case two without any
+            // actual monitor threads.
+
+            let mut info = RingBufferInfo::new("ringbuffer");
+            let producer = ClientMonitorInfo::new(Client::Producer { pid: 4321 });
+            let consumer = ClientMonitorInfo::new(Client::Consumer { pid: 1234, slot: 2 });
+
+            let arc_producer = Arc::new(Mutex::new(producer));
+            let arc_consumer = Arc::new(Mutex::new(consumer));
+
+            info.add_client(&arc_producer)
+                .add_client(&arc_consumer)
+                .remove_all();
+
+            assert_eq!(0, info.client_monitors.len());
         }
     }
 }
