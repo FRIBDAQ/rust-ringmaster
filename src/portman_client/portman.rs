@@ -263,5 +263,22 @@ pub mod portman {
                 }
             }
         }
+        ///
+        /// Find a service advertisement by service name. Note that since this is not
+        /// qualified by the user name, more than one result may be returned on success.
+        ///
+        fn find_by_service(&mut self, service_name: &str) -> Result<Vec<Allocation>, Error> {
+            match self.list() {
+                Ok(all_services) => {
+                    let result: Vec<Allocation> = all_services
+                        .into_iter()
+                        .filter(|item| item.service_name == service_name)
+                        .collect::<Vec<Allocation>>();
+
+                    Ok(result)
+                }
+                Err(e) => Err(e),
+            }
+        }
     }
 }
