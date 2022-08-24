@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
 use std::io::Error;
+use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::process;
 ///
@@ -24,6 +25,7 @@ struct ProgramOptions {
 fn main() {
     let options = process_options();
     simple_logging::log_to_file(&options.log_filename, log::LevelFilter::Info).unwrap();
+    info!("Ringmaster Options {:#?}", options);
     info!(
         "Ringmaster doing inventory of existing rings on {}",
         options.directory
@@ -51,8 +53,40 @@ fn main() {
         service_port
     );
 
-    println!("Options {:#?}", options);
+    server(service_port, &options.directory, &mut ring_inventory);
 }
+///
+/// Main server function.  We make a listener, and process requests
+/// sent to us by clients.  Each request has its own service function.
+/// We need:
+///    
+/// *   Our service port.
+/// *   The directory so that we know where the ringbuffers are.
+/// *   A mutable reference to the ringbufer inventory to operate on.
+///
+fn server(
+    listen_port: u16,
+    ring_directory: &str,
+    ring_inventory: &mut HashMap<String, rings::rings::RingBufferInfo>,
+) {
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", listen_port));
+    if let Err(l) = listener {
+        error!("Failed to listen on {} : {}", listen_port, l.to_string());
+        process::exit(-1);
+    }
+    for client in listener.unwrap().incoming() {
+        match client {
+            Ok(mut stream) => {
+                handle_request(stream);
+            }
+            Err(e) => {
+                error!("Failed to accept a client: {}", e.to_string());
+                process::exit(-1);
+            }
+        }
+    }
+}
+fn handle_request(mut stream: TcpStream) {}
 ///
 /// Argument processing.  We do this with clap.  As per the main
 /// comments, the options we support are:
