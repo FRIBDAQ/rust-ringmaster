@@ -38,7 +38,7 @@ pub mod portman {
     pub struct Allocation {
         pub port: u16,
         pub service_name: String,
-        pub usern_name: String,
+        pub user_name: String,
     }
 
     ///
@@ -97,7 +97,7 @@ pub mod portman {
         fn get_reply(socket: &mut TcpStream) -> Result<Vec<String>, Error> {
             let mut reader = BufReader::new(socket.try_clone().unwrap());
             let mut reply = String::new();
-            if (reader.read_line(&mut reply).unwrap() > 0) {
+            if reader.read_line(&mut reply).unwrap() > 0 {
                 let words: Vec<&str> = reply.split(" ").collect();
                 match words[0] {
                     "OK" => {
@@ -117,6 +117,49 @@ pub mod portman {
                 Err(Error::ConnectionLost)
             }
         }
+        // Get the lines from the server that contain the list of port allocations.
+        // These are triplets of the form
+        //
+        //    port-num service-name advertising-user
+        //
+        // It's still possible for errors to occur (e.g. the server dies in the middle of)
+        // writing these lines.
+        //
+        fn get_allocations(socket: &mut TcpStream, n: usize) -> Result<Vec<Allocation>, Error> {
+            // Easier to read lines if the socket get wrapped up in a BufReader:
+
+            let mut result: Vec<Allocation> = Vec::new();
+            let mut reader = BufReader::new(socket.try_clone().unwrap());
+            for i in 0..n {
+                let mut allocation_string = String::new();
+                if let Ok(size) = reader.read_line(&mut allocation_string) {
+                    if size > 0 {
+                        let words: Vec<&str> = allocation_string.split(" ").collect();
+                        if words.len() == 3 {
+                            let service = String::from(words[1]);
+                            let user = String::from(words[2]);
+                            if let Ok(port) = String::from(words[0]).parse::<u16>() {
+                                result.push(Allocation {
+                                    port: port,
+                                    service_name: service,
+                                    user_name: user,
+                                });
+                            } else {
+                                return Err(Error::UnanticipatedReply);
+                            }
+                        } else {
+                            return Err(Error::UnanticipatedReply);
+                        }
+                    } else {
+                        return Err(Error::ConnectionLost);
+                    }
+                } else {
+                    return Err(Error::ConnectionLost);
+                }
+            }
+            return Ok(result);
+        }
+
         ///
         /// Create a client object.  The client is not
         /// initially connected to the server.  The connection to the
@@ -151,8 +194,13 @@ pub mod portman {
                     let me = whoami::username();
                     let request = format!("GIMME {} {}\n", service_name, me);
                     // Send the request
-                    socket.write_all(request.as_bytes());
-                    socket.flush();
+                    if let Err(e) = socket.write_all(request.as_bytes()) {
+                        return Err(Error::ConnectionLost);
+                    }
+
+                    if let Err(e) = socket.flush() {
+                        return Err(Error::ConnectionLost);
+                    }
                     //
                     // Get/processcargo  the reply:
                     //
@@ -171,6 +219,45 @@ pub mod portman {
                             }
                         }
 
+                        Err(reason) => Err(reason),
+                    }
+                }
+            }
+        }
+        ///
+        /// List all the port allocations.  On success, thesse are returned as a
+        /// vector of Allocation objects which the user can interrogate to
+        /// determine if they contain what's needed.  Note as well
+        /// that this function is called by all of the methods that search
+        /// for specific allocation (sets) as the port manager can only
+        /// return all allocations.  Any filtering must be done client side.
+        ///
+        pub fn list(&mut self) -> Result<Vec<Allocation>, Error> {
+            match self.make_connection() {
+                Err(e) => Err(e),
+                Ok(mut socket) => {
+                    // Format and send the message:
+
+                    if let Err(e) = socket.write_all(b"LIST\n") {
+                        return Err(Error::ConnectionLost);
+                    }
+                    if let Err(e) = socket.flush() {
+                        return Err(Error::ConnectionLost);
+                    }
+                    // The first reply word will contain the number of service lines to follow:
+
+                    match Self::get_reply(&mut socket) {
+                        Ok(tail) => {
+                            if tail.len() == 1 {
+                                let num_lines = tail[0].parse::<usize>();
+                                match num_lines {
+                                    Ok(n) => Err(Error::Unimplemented),
+                                    Err(_) => Err(Error::UnanticipatedReply),
+                                }
+                            } else {
+                                Err(Error::UnanticipatedReply)
+                            }
+                        }
                         Err(reason) => Err(reason),
                     }
                 }
