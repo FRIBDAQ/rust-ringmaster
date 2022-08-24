@@ -20,12 +20,14 @@ pub mod portman {
         ///
         pub fn to_string(&self) -> String {
             match self {
-                ConnectionFailed => String::from("Connection to port manager failed"),
-                Unimplemented => String::from("This operation is not yet implemented"),
-                AllocationFailed => String::from("Failed to allocate a port from the manager"),
-                ConnectionLost => String::from("connection with server lost"),
-                RequestDenied => String::from("Server returned a failure on the request."),
-                UnanticipatedReply => {
+                Error::ConnectionFailed => String::from("Connection to port manager failed"),
+                Error::Unimplemented => String::from("This operation is not yet implemented"),
+                Error::AllocationFailed => {
+                    String::from("Failed to allocate a port from the manager")
+                }
+                Error::ConnectionLost => String::from("connection with server lost"),
+                Error::RequestDenied => String::from("Server returned a failure on the request."),
+                Error::UnanticipatedReply => {
                     String::from("The server reply was not an anticipated string")
                 }
             }
@@ -49,8 +51,9 @@ pub mod portman {
     /// *   list - list all port allocations.
     /// *   find_by_service - lists services that match a name
     /// *   find_by_user    - lists services a user advertises
-    /// *   find_my_service - Locates, by name a service I advertise.
     /// *   find_exact      - find a service by user/service_name.
+    /// *   find_my_service - Locates, by name a service I advertise.
+    ///
     ///
     /// Note that at present we only support operations with the local
     /// port manager as remote port manager operations cannot allocate ports
@@ -267,7 +270,7 @@ pub mod portman {
         /// Find a service advertisement by service name. Note that since this is not
         /// qualified by the user name, more than one result may be returned on success.
         ///
-        fn find_by_service(&mut self, service_name: &str) -> Result<Vec<Allocation>, Error> {
+        pub fn find_by_service(&mut self, service_name: &str) -> Result<Vec<Allocation>, Error> {
             match self.list() {
                 Ok(all_services) => {
                     let result: Vec<Allocation> = all_services
@@ -279,6 +282,46 @@ pub mod portman {
                 }
                 Err(e) => Err(e),
             }
+        }
+        /// Find service advertisement by username - this lists all of the services a specific
+        /// user has allocated.
+        ///
+        pub fn find_by_user(&mut self, user_name: &str) -> Result<Vec<Allocation>, Error> {
+            match self.list() {
+                Ok(all_services) => {
+                    let result = all_services
+                        .into_iter()
+                        .filter(|item| item.user_name == user_name)
+                        .collect::<Vec<Allocation>>();
+                    Ok(result)
+                }
+                Err(e) => Err(e),
+            }
+        }
+        /// Find an exact match between a service given its name and advertising username.
+        ///
+        pub fn find_exact(
+            &mut self,
+            service_name: &str,
+            user_name: &str,
+        ) -> Result<Vec<Allocation>, Error> {
+            match self.find_by_user(user_name) {
+                Ok(user_services) => {
+                    let result = user_services
+                        .into_iter()
+                        .filter(|item| item.service_name == service_name)
+                        .collect::<Vec<Allocation>>();
+                    Ok(result)
+                }
+                Err(e) => Err(e),
+            }
+        }
+        /// find a service _I_ advertise .. that is, given a servicename, find
+        ///  it for my username.
+        ///
+        pub fn find_my_service(&mut self, service_name: &str) -> Result<Vec<Allocation>, Error> {
+            let me = whoami::username();
+            self.find_exact(service_name, &me)
         }
     }
 }
