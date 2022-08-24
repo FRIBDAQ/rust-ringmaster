@@ -1,14 +1,16 @@
 use clap::{App, Arg};
 use log::{info, trace, warn};
+use nscldaq_ringmaster::portman_client::portman::*;
 use nscldaq_ringmaster::rings::inventory;
 use nscldaq_ringmaster::rings::rings;
 use nscldaq_ringmaster::tcllist;
 use simple_logging;
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::fs;
 use std::io::Error;
+use std::path::Path;
 use std::process;
-
 ///
 /// This holds the command line options:
 ///
@@ -21,7 +23,7 @@ struct ProgramOptions {
 
 fn main() {
     let options = process_options();
-    simple_logging::log_to_file(&options.log_filename, log::LevelFilter::Info);
+    simple_logging::log_to_file(&options.log_filename, log::LevelFilter::Info).unwrap();
     info!(
         "Ringmaster doing inventory of existing rings on {}",
         options.directory
@@ -135,7 +137,41 @@ fn process_options() -> ProgramOptions {
 ///  The result is a hash map of RingBufferInfo indexed by ring name.
 ///
 fn inventory_rings(directory: &str) -> HashMap<String, rings::rings::RingBufferInfo> {
-    let result = HashMap::<String, rings::rings::RingBufferInfo>::new();
-    inventory::inventory::inventory_rings(directory, &mut |name| {}, &mut |name| {});
+    let mut result = HashMap::<String, rings::rings::RingBufferInfo>::new();
+    inventory::inventory::inventory_rings(
+        directory,
+        &mut |name| {
+            add_ring(name, &mut result);
+        },
+        &mut |name| {
+            log_non_ring(name);
+        },
+    );
     result
+}
+/// Return the filename from a full path string:
+///
+fn filename_from_path(name: &str) -> String {
+    let p = Path::new(name).file_name().expect("Must be a filename");
+    String::from(p.to_str().expect("Filename must be utf8"))
+}
+///
+///  Log and add a new ring to a ringbuffer inventory:
+///
+fn add_ring(name: &str, list: &mut HashMap<String, rings::rings::RingBufferInfo>) {
+    let filename = filename_from_path(name);
+    list.insert(
+        String::from(filename.as_str()),
+        rings::rings::RingBufferInfo::new(name),
+    );
+    info!(
+        "{} is a ring buffer, added to the ring buffer inventory",
+        filename
+    );
+}
+/// Log a file that is not a ringbufer:
+///
+fn log_non_ring(name: &str) {
+    let filename = filename_from_path(name);
+    info!("{} is not a ring buffer - ignored", filename);
 }
