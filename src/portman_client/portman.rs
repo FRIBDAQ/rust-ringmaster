@@ -1,11 +1,13 @@
 pub mod portman {
-    use std::io::{BufRead, BufReader, Read, Write};
-    use std::net::TcpStream;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{Shutdown, TcpStream};
+    use std::ops::Drop;
     use whoami;
     /// Error reporting is via one of these enumerated constant in a Result Err
     /// The function to_string is defined on the enum to convert enum elements
     /// into a human readable string:
     ///
+    #[derive(PartialEq, Debug)]
     pub enum Error {
         ConnectionFailed,
         Unimplemented,
@@ -61,6 +63,7 @@ pub mod portman {
     pub struct Client {
         port: u16,
         connection: Option<TcpStream>,
+        reader: Option<BufReader<TcpStream>>,
     }
 
     impl Client {
@@ -79,6 +82,9 @@ pub mod portman {
                 match TcpStream::connect(&address) {
                     Ok(socket) => {
                         self.connection = Some(socket);
+                        self.reader = Some(BufReader::new(
+                            self.connection.as_ref().expect("OK").try_clone().unwrap(),
+                        ));
                         Ok(self
                             .connection
                             .as_ref()
@@ -97,11 +103,17 @@ pub mod portman {
         // the remaining words are returned as they represent the
         // server response.
         //
-        fn get_reply(socket: &mut TcpStream) -> Result<Vec<String>, Error> {
-            let mut reader = BufReader::new(socket.try_clone().unwrap());
+        fn get_reply(&mut self) -> Result<Vec<String>, Error> {
             let mut reply = String::new();
-            if reader.read_line(&mut reply).unwrap() > 0 {
-                let words: Vec<&str> = reply.split(" ").collect();
+            if self
+                .reader
+                .as_mut()
+                .expect("BUG")
+                .read_line(&mut reply)
+                .unwrap()
+                > 0
+            {
+                let words: Vec<&str> = reply.trim().split(" ").collect();
                 match words[0] {
                     "OK" => {
                         let mut result = Vec::<String>::new();
@@ -128,16 +140,21 @@ pub mod portman {
         // It's still possible for errors to occur (e.g. the server dies in the middle of)
         // writing these lines.
         //
-        fn get_allocations(socket: &mut TcpStream, n: usize) -> Result<Vec<Allocation>, Error> {
+        fn get_allocations(&mut self, n: usize) -> Result<Vec<Allocation>, Error> {
             // Easier to read lines if the socket get wrapped up in a BufReader:
 
             let mut result: Vec<Allocation> = Vec::new();
-            let mut reader = BufReader::new(socket.try_clone().unwrap());
+
             for i in 0..n {
                 let mut allocation_string = String::new();
-                if let Ok(size) = reader.read_line(&mut allocation_string) {
+                if let Ok(size) = self
+                    .reader
+                    .as_mut()
+                    .expect("BUG")
+                    .read_line(&mut allocation_string)
+                {
                     if size > 0 {
-                        let words: Vec<&str> = allocation_string.split(" ").collect();
+                        let words: Vec<&str> = allocation_string.trim().split(" ").collect();
                         if words.len() == 3 {
                             let service = String::from(words[1]);
                             let user = String::from(words[2]);
@@ -178,6 +195,7 @@ pub mod portman {
             Client {
                 port: port,
                 connection: None,
+                reader: None,
             }
         }
 
@@ -207,7 +225,7 @@ pub mod portman {
                     //
                     // Get/processcargo  the reply:
                     //
-                    match Self::get_reply(&mut socket) {
+                    match self.get_reply() {
                         Ok(port) => {
                             // port must be a one element array containing the
                             // port number:
@@ -249,12 +267,12 @@ pub mod portman {
                     }
                     // The first reply word will contain the number of service lines to follow:
 
-                    match Self::get_reply(&mut socket) {
+                    match self.get_reply() {
                         Ok(tail) => {
                             if tail.len() == 1 {
                                 let num_lines = tail[0].parse::<usize>();
                                 match num_lines {
-                                    Ok(n) => Err(Error::Unimplemented),
+                                    Ok(n) => self.get_allocations(n),
                                     Err(_) => Err(Error::UnanticipatedReply),
                                 }
                             } else {
@@ -322,6 +340,106 @@ pub mod portman {
         pub fn find_my_service(&mut self, service_name: &str) -> Result<Vec<Allocation>, Error> {
             let me = whoami::username();
             self.find_exact(service_name, &me)
+        }
+    }
+    impl Drop for Client {
+        fn drop(&mut self) {
+            if let Some(s) = &mut self.connection {
+                let _ = s.shutdown(Shutdown::Both);
+            }
+        }
+    }
+    #[cfg(test)]
+    mod portman_ctests {
+        use super::*;
+        use whoami;
+        // Note that the port manager client tests require that a port manager
+        // be running listening on the default port 30000
+        // These must also be run --test-threads = 1 so that
+        // there are not concurrent requests to allocated, e.g.
+        // the same port
+
+        #[test]
+        fn new_1() {
+            let portman = Client::new(30000);
+            assert_eq!(30000, portman.port);
+            assert!(portman.connection.is_none());
+        }
+        #[test]
+        fn connect_1() {
+            let mut portman = Client::new(30000);
+
+            match portman.make_connection() {
+                Ok(_) => assert!(true),
+                Err(reason) => assert!(false, "Should have connected"),
+            }
+        }
+        #[test]
+        fn connect_2() {
+            let mut portman = Client::new(30001); // Wrong port.
+            match portman.make_connection() {
+                Ok(_) => assert!(false, "Connection should have failed"),
+                Err(reason) => assert_eq!(Error::ConnectionFailed, reason),
+            }
+        }
+        #[test]
+        fn get_1() {
+            let mut portman = Client::new(30000);
+            match portman.get("testing") {
+                Ok(port) => assert!(true),
+                Err(e) => assert!(false, "{}", e.to_string()),
+            }
+        }
+        #[test]
+        fn get_2() {
+            // double allocation of the same port gives
+            // Error::RequestDenied supposedly.
+
+            let mut portman = Client::new(30000);
+            portman.get("testing").unwrap();
+            match portman.get("testing") {
+                Ok(_) => assert!(false, "Double allocation should fail"),
+                Err(e) => assert_eq!(Error::RequestDenied, e),
+            }
+        }
+        #[test]
+        fn list_1() {
+            // Empty list:
+
+            let mut portman = Client::new(30000);
+            match portman.list() {
+                Ok(allocs) => assert_eq!(0, allocs.len()),
+                Err(_) => assert!(false, "List failed"),
+            }
+        }
+        #[test]
+        fn list_2() {
+            // List with one element:
+            let mut portman = Client::new(30000);
+            portman.get("Testing").unwrap();
+            let me = whoami::username();
+            let result = portman.list().unwrap();
+            assert_eq!(1, result.len());
+            assert_eq!("Testing", result[0].service_name);
+            assert_eq!(me, result[0].user_name);
+        }
+        #[test]
+        fn list_3() {
+            // list with a few items:
+
+            let mut portman = Client::new(30000);
+            portman.get("service1").unwrap();
+            portman.get("service2").unwrap();
+            portman.get("service3").unwrap();
+            portman.get("service4").unwrap();
+
+            let mut allocs = portman.list().unwrap();
+            assert_eq!(4, allocs.len());
+            allocs.sort_by_key(|item| String::from(item.service_name.as_str()));
+            assert_eq!("service1", allocs[0].service_name);
+            assert_eq!("service2", allocs[1].service_name);
+            assert_eq!("service3", allocs[2].service_name);
+            assert_eq!("service4", allocs[3].service_name);
         }
     }
 }
