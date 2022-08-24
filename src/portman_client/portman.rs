@@ -497,5 +497,30 @@ pub mod portman {
             let mut matches = portman.find_by_user("no-such-user").unwrap();
             assert_eq!(0, matches.len());
         }
+        #[test]
+        fn find_exact_1() {
+            let mut portman = Client::new(30000);
+            portman.get("service1").unwrap();
+            portman.get("service2").unwrap();
+            portman.get("service3").unwrap();
+            portman.get("service4").unwrap();
+
+            let mut matches = portman.find_exact("service3", &whoami::username()).unwrap();
+            assert_eq!(1, matches.len());
+            assert_eq!("service3", matches[0].service_name);
+            assert_eq!(whoami::username(), matches[0].user_name);
+        }
+        #[test]
+        fn find_exact_2() {
+            // no matches:
+            let mut portman = Client::new(30000);
+            portman.get("service1").unwrap();
+            portman.get("service2").unwrap();
+            portman.get("service3").unwrap();
+            portman.get("service4").unwrap();
+
+            let matches = portman.find_exact("soivice", &whoami::username()).unwrap();
+            assert_eq!(0, matches.len());
+        }
     }
 }
