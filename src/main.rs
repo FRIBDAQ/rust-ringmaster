@@ -1,5 +1,5 @@
 use clap::{App, Arg};
-use log::{info, trace, warn};
+use log::{error, info, trace, warn};
 use nscldaq_ringmaster::portman_client::portman::*;
 use nscldaq_ringmaster::rings::inventory;
 use nscldaq_ringmaster::rings::rings;
@@ -29,6 +29,28 @@ fn main() {
         options.directory
     );
     let mut ring_inventory = inventory_rings(&options.directory);
+
+    info!("Obtaining port from portmanager...");
+    let mut port_man = portman::Client::new(options.portman);
+    let service_port: u16;
+    match port_man.get("RingMaster") {
+        Ok(p) => {
+            service_port = p;
+        }
+        Err(e) => {
+            error!("Unable to get a service port: {}", e.to_string());
+            eprintln!(
+                "Failed to get a service port from the port mangaer: {}",
+                e.to_string()
+            );
+            process::exit(-1);
+        }
+    }
+    info!(
+        "Ringmaster will handle connections on listen port {}",
+        service_port
+    );
+
     println!("Options {:#?}", options);
 }
 ///
