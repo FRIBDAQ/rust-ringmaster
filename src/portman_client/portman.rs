@@ -441,5 +441,61 @@ pub mod portman {
             assert_eq!("service3", allocs[2].service_name);
             assert_eq!("service4", allocs[3].service_name);
         }
+        #[test]
+        fn find_service_1() {
+            let mut portman = Client::new(30000);
+            portman.get("service1").unwrap();
+            portman.get("service2").unwrap();
+            portman.get("service3").unwrap();
+            portman.get("service4").unwrap();
+
+            let matches = portman.find_by_service("service2").unwrap();
+            assert_eq!(1, matches.len());
+            assert_eq!("service2", matches[0].service_name);
+            assert_eq!(whoami::username(), matches[0].user_name);
+        }
+        #[test]
+        fn find_service_2() {
+            // no matching service:
+            let mut portman = Client::new(30000);
+            portman.get("service1").unwrap();
+            portman.get("service2").unwrap();
+            portman.get("service3").unwrap();
+            portman.get("service4").unwrap();
+
+            let matches = portman.find_by_service("service0").unwrap();
+            assert_eq!(0, matches.len());
+        }
+        // find username tests -- well they'll be better if some external force
+        // at this time makes a service with a diffent username.
+        #[test]
+        fn find_by_user_1() {
+            let mut portman = Client::new(30000);
+            portman.get("service1").unwrap();
+            portman.get("service2").unwrap();
+            portman.get("service3").unwrap();
+            portman.get("service4").unwrap();
+
+            let mut matches = portman.find_by_user(&whoami::username()).unwrap();
+            assert_eq!(4, matches.len());
+            matches.sort_by_key(|item| String::from(item.service_name.as_str()));
+            assert_eq!("service1", matches[0].service_name);
+            assert_eq!("service2", matches[1].service_name);
+            assert_eq!("service3", matches[2].service_name);
+            assert_eq!("service4", matches[3].service_name);
+        }
+        #[test]
+        fn find_by_user_2() {
+            // no matches
+
+            let mut portman = Client::new(30000);
+            portman.get("service1").unwrap();
+            portman.get("service2").unwrap();
+            portman.get("service3").unwrap();
+            portman.get("service4").unwrap();
+
+            let mut matches = portman.find_by_user("no-such-user").unwrap();
+            assert_eq!(0, matches.len());
+        }
     }
 }
