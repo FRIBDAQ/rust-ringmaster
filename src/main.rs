@@ -11,7 +11,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::Error;
 use std::io::{BufRead, BufReader, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, Ipv6Addr, Shutdown, TcpListener, TcpStream};
 use std::path::Path;
 use std::process;
 use std::sync::{Arc, Mutex};
@@ -122,8 +122,19 @@ fn handle_request(mut stream: TcpStream, dir: &str, inventory: &mut RingInventor
                 info!("List request from {}", stream.peer_addr().unwrap());
                 list_rings(stream, dir, inventory);
             }
+            "REGISTER" => {
+                info!(
+                    "Register request from {} (will enforce locality",
+                    stream.peer_addr().unwrap()
+                );
+                if request.len() != 2 {
+                    fail_request(&mut stream, "REGISTER must have only a ring name parameter");
+                } else {
+                    register_ring(&mut stream, dir, &request[1], inventory);
+                }
+            }
             _ => {
-                fail_request(stream, "Invalid Request");
+                fail_request(&mut stream, "Invalid Request");
             }
         }
     } else {
@@ -132,8 +143,53 @@ fn handle_request(mut stream: TcpStream, dir: &str, inventory: &mut RingInventor
         // These if-lets are just a fancy way to ignore Err's from
         // their functions.
         //
-        fail_request(stream, "Empty request");
+        fail_request(&mut stream, "Empty request");
     }
+}
+///
+/// Determine if a peer is local:
+///
+fn is_local_peer(stream: &TcpStream) -> bool {
+    if let Ok(peer) = stream.peer_addr() {
+        match peer {
+            V4 => peer.ip() == Ipv4Addr::new(127, 0, 0, 1),
+            V6 => peer.ip() == Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1),
+        }
+    } else {
+        false
+    }
+}
+/// register a new ring to the system:
+///
+/// *   The request must be local.
+/// *   The ring must not already be in the inventory.
+/// *   The file representing the ring must exist and be a ring buffer.
+///
+/// If all of that holds the ring is added to the inventory and
+/// an "OK\n" response is emitted.  Regardless, the connection is closed.
+///
+fn register_ring(mut stream: &mut TcpStream, dir: &str, name: &str, inventory: &mut RingInventory) {
+    if is_local_peer(&stream) {
+        if inventory.contains_key(name) {
+            fail_request(
+                &mut stream,
+                format!("Ring {} has already been registered", name).as_str(),
+            );
+        } else {
+            if let Ok(map) = ringbuffer::RingBufferMap::new(name) {
+                add_ring(name, inventory);
+                if let Ok(_) = stream.write_all(b"Ok\n") {}
+            } else {
+                fail_request(
+                    &mut stream,
+                    format!("{} is not a ringbuffer", name).as_str(),
+                );
+            }
+        }
+    } else {
+        fail_request(&mut stream, "REGISTER Must come from a local host");
+    }
+    if let Ok(_) = stream.shutdown(Shutdown::Both) {}
 }
 ///
 /// Return a vector of ring list information.
@@ -270,7 +326,7 @@ fn read_request(reader: &mut BufReader<TcpStream>) -> Vec<String> {
 /// string to the peer and shutting down the socket.
 ///
 ///
-fn fail_request(mut stream: TcpStream, reason: &str) {
+fn fail_request(stream: &mut TcpStream, reason: &str) {
     if let Ok(_) = stream.write_all(format!("FAIL {}\n", reason).as_bytes()) {}
     if let Ok(_) = stream.shutdown(Shutdown::Both) {}
 }
