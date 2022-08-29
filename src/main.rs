@@ -12,7 +12,7 @@ use std::fs;
 use std::io::Error;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, Ipv6Addr, Shutdown, TcpListener, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::{Arc, Mutex};
 
@@ -137,6 +137,20 @@ fn handle_request(mut stream: TcpStream, dir: &str, inventory: &mut RingInventor
                     register_ring(&mut stream, dir, &request[1], inventory);
                 }
             }
+            "UNREGISTER" => {
+                info!(
+                    "Unregister request from {} will enforce locality",
+                    stream.peer_addr().unwrap()
+                );
+                if request.len() != 2 {
+                    fail_request(
+                        &mut stream,
+                        "UNREGISTER must have only a ring name parameter",
+                    );
+                } else {
+                    unregister_ring(&mut stream, dir, &request[1], inventory);
+                }
+            }
             _ => {
                 fail_request(&mut stream, "Invalid Request");
             }
@@ -163,6 +177,66 @@ fn is_local_peer(stream: &TcpStream) -> bool {
         false
     }
 }
+///
+///  unregister a ring that was deleted.
+///  
+///  *  The request must be local.
+///  *  The ring must be in the inventory.
+///  *  The file representing the ring must be in the inventory.
+///  *  If the file exists (has not been deleted by the invoker),
+///     it will be deleted by us.
+///
+/// On success "Ok\n" is emitted.  Regardess, the connectio is
+/// closed after the request...if possible.
+///
+/// #### Note
+///
+/// If this program runs at escalated privilege, there's a bit of
+/// escalated privilege in the sense that this allows a non-privileged
+/// requestor to delete a ring-buffer file the requestor could not otherwise
+/// delete.
+///
+fn unregister_ring(
+    stream: &mut TcpStream,
+    directory: &str,
+    ring_name: &str,
+    inventory: &mut RingInventory,
+) {
+    if is_local_peer(&stream) {
+        // The inventory must contain the ring.  The file need not be present
+        // as in theory there was once a ring buffer file named that if
+        // it was in our inventory.
+
+        if inventory.contains_key(ring_name) {
+            if let Some(info) = inventory.get_mut(ring_name) {
+                info.remove_all();
+                inventory.remove(ring_name).unwrap();
+
+                // If the ring file exists, try to remove it
+                // Note we could be unprived and unable and that's ok
+
+                let mut ring_path = PathBuf::new();
+                ring_path.push(directory);
+                ring_path.push(ring_name);
+                let ring_path = ring_path.as_path();
+                if ring_path.exists() {
+                    if let Ok(_) = fs::remove_file(ring_path) {}
+                }
+                if let Ok(_) = stream.write_all(b"Ok\n") {}
+                if let Ok(_) = stream.flush() {}
+                if let Ok(_) = stream.shutdown(Shutdown::Both) {}
+            }
+        } else {
+            fail_request(
+                stream,
+                format!("Ring named {} is not known", ring_name).as_str(),
+            );
+        }
+    } else {
+        fail_request(stream, "UNREGISTER request only legal from local peers");
+    }
+}
+
 /// register a new ring to the system:
 ///
 /// *   The request must be local.
@@ -180,9 +254,15 @@ fn register_ring(mut stream: &mut TcpStream, dir: &str, name: &str, inventory: &
                 format!("Ring {} has already been registered", name).as_str(),
             );
         } else {
-            if let Ok(map) = ringbuffer::RingBufferMap::new(name) {
+            let mut full_path = PathBuf::new();
+            full_path.push(dir);
+            full_path.push(name);
+            let full_path = String::from(full_path.to_str().unwrap());
+            if let Ok(map) = ringbuffer::RingBufferMap::new(&full_path) {
                 add_ring(name, inventory);
                 if let Ok(_) = stream.write_all(b"Ok\n") {}
+                if let Ok(_) = stream.flush() {}
+                if let Ok(_) = stream.shutdown(Shutdown::Both) {}
             } else {
                 fail_request(
                     &mut stream,
@@ -193,7 +273,6 @@ fn register_ring(mut stream: &mut TcpStream, dir: &str, name: &str, inventory: &
     } else {
         fail_request(&mut stream, "REGISTER Must come from a local host");
     }
-    if let Ok(_) = stream.shutdown(Shutdown::Both) {}
 }
 ///
 /// Return a vector of ring list information.
@@ -345,6 +424,7 @@ fn read_request(reader: &mut BufReader<TcpStream>) -> Vec<String> {
 ///
 fn fail_request(stream: &mut TcpStream, reason: &str) {
     if let Ok(_) = stream.write_all(format!("FAIL {}\n", reason).as_bytes()) {}
+    if let Ok(_) = stream.flush() {}
     if let Ok(_) = stream.shutdown(Shutdown::Both) {}
 }
 /// Argument processing.  We do this with clap.  As per the main
