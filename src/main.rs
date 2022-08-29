@@ -120,7 +120,11 @@ fn handle_request(mut stream: TcpStream, dir: &str, inventory: &mut RingInventor
         match request[0].as_str() {
             "LIST" => {
                 info!("List request from {}", stream.peer_addr().unwrap());
-                list_rings(stream, dir, inventory);
+                if request.len() != 1 {
+                    fail_request(&mut stream, "LIST does not take any parameters");
+                } else {
+                    list_rings(stream, dir, inventory);
+                }
             }
             "REGISTER" => {
                 info!(
@@ -213,19 +217,32 @@ fn register_ring(mut stream: &mut TcpStream, dir: &str, name: &str, inventory: &
 ///     *  The number of bytes of backlog the consumer has.
 /// The stream will be closed
 ///
+/// ##### Note
+///    If the ring has disappeared, we clean, and any watches up.
 fn list_rings(mut stream: TcpStream, directory: &str, inventory: &mut RingInventory) {
-    // stub
-    // We're ignoring failures because eventually we'll shutdown the stream anyway.
+    let mut gone_rings = Vec::<String>::new();
+
     if let Ok(_) = stream.write_all(b"Ok\n") {
         let mut listing = tcllist::TclList::new();
         for name in inventory.keys() {
             if let Ok(ring_info) = get_ring_list_info(directory, name) {
                 listing.add_element(&format_ring_info(ring_info));
+            } else {
+                gone_rings.push(name.to_string()); // Destroying here invalidates iterator.
             }
         }
         if let Ok(_) = stream.write_all(format!("{}\n", listing).as_bytes()) {}
     }
     if let Ok(_) = stream.shutdown(Shutdown::Both) {}
+
+    // Kill off all the rings that failed to list (they died).
+
+    for bad_ring in gone_rings {
+        if let Some(ring_info) = inventory.get_mut(&bad_ring) {
+            ring_info.remove_all();
+            if let Some(_) = inventory.remove(&bad_ring) {}
+        }
+    }
 }
 /// Given a ring info struct, and it's name turns it into a Tcl list that
 /// describes that ring.
@@ -311,7 +328,7 @@ fn read_request(reader: &mut BufReader<TcpStream>) -> Vec<String> {
     if let Ok(len) = reader.read_line(&mut request_line) {
         // Got a line-- maybe:
         if len > 0 {
-            request_line.trim(); // Kills off the trailing \n too.
+            request_line = String::from(request_line.trim()); // Kills off the trailing \n too.
             for word in request_line
                 .split(char::is_whitespace)
                 .collect::<Vec<&str>>()
