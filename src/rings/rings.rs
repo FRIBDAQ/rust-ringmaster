@@ -144,6 +144,17 @@ pub mod rings {
                 client_monitors: HashMap::new(),
             }
         }
+        /// Check existence of a pid
+        ///
+        pub fn have_pid(&self, pid: u32) -> bool {
+            self.client_monitors.contains_key(&pid)
+        }
+        ///
+        /// Get the client information associated with a pid in the ringL
+        ///
+        pub fn get_client_info(&mut self, pid: &u32) -> Option<&Arc<Mutex<ClientMonitorInfo>>> {
+            self.client_monitors.get(&pid)
+        }
         ///
         /// Add a new client to the ring buffer.
         /// The thread must have been started (if there will be one)
