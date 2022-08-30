@@ -264,17 +264,22 @@ fn monitor_client(
             }
         }
     }
+
     // Now we need to remove our monitor entry from the
     // set of clients for this ring in the inventory.
     // To do that we turn the ring back into a name
     let ring_name = String::from(Path::new(ring).file_name().unwrap().to_str().unwrap());
-
+    info!(
+        "Lost connection with {} client of ring {} cleaning up",
+        client_pid, ring_name
+    );
     // We need to be tolerant of the possibility the
     // ring went from our inventory:
 
     if let Some(ring_info) = inventory.lock().unwrap().get_mut(&ring_name) {
-        ring_info.unregister_client(client_pid);
+        ring_info.unlist_client(client_pid);
     }
+    info!("Exiting {} monitor thread", client_pid);
 }
 
 fn hookup_client(
@@ -503,8 +508,9 @@ fn register_ring(mut stream: &mut TcpStream, dir: &str, name: &str, inventory: &
 ///    If the ring has disappeared, we clean, and any watches up.
 fn list_rings(mut stream: TcpStream, directory: &str, inventory: &SafeInventory) {
     let mut gone_rings = Vec::<String>::new();
+    info!("Locking inventory");
     let mut inventory = inventory.lock().unwrap();
-
+    info!("Locked");
     if let Ok(_) = stream.write_all(b"Ok\n") {
         let mut listing = tcllist::TclList::new();
         for name in inventory.keys() {

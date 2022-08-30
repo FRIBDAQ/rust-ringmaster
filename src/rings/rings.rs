@@ -160,6 +160,12 @@ pub mod rings {
 
             self
         }
+        /// unlist client
+        ///
+        pub fn unlist_client(&mut self, pid: u32) -> &mut RingBufferInfo {
+            if let Some(_) = self.client_monitors.remove(&pid) {}
+            self
+        }
         /// Remove a client from a ring buffer given its pid.
         ///  
         /// *  Halt the monitor thread.
