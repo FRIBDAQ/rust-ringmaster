@@ -279,7 +279,6 @@ fn monitor_client(
     if let Some(ring_info) = inventory.lock().unwrap().get_mut(&ring_name) {
         ring_info.unlist_client(client_pid);
     }
-    info!("Exiting {} monitor thread", client_pid);
 }
 
 fn hookup_client(
@@ -508,9 +507,9 @@ fn register_ring(mut stream: &mut TcpStream, dir: &str, name: &str, inventory: &
 ///    If the ring has disappeared, we clean, and any watches up.
 fn list_rings(mut stream: TcpStream, directory: &str, inventory: &SafeInventory) {
     let mut gone_rings = Vec::<String>::new();
-    info!("Locking inventory");
+
     let mut inventory = inventory.lock().unwrap();
-    info!("Locked");
+
     if let Ok(_) = stream.write_all(b"Ok\n") {
         let mut listing = tcllist::TclList::new();
         for name in inventory.keys() {
@@ -555,13 +554,15 @@ fn format_ring_info(info: RingInfo) -> String {
 
     // Now a sublist for each consumer:
 
+    let mut consumer_list = tcllist::TclList::new();
     for consumer in info.info.consumer_usage {
         let mut consumer_info = tcllist::TclList::new();
         consumer_info
             .add_element(&consumer.pid.to_string())
             .add_element(&consumer.available.to_string());
-        result.add_sublist(Box::new(consumer_info));
+        consumer_list.add_sublist(Box::new(consumer_info));
     }
+    result.add_sublist(Box::new(consumer_list));
     result.to_string()
 }
 /// get_ring_list_info
