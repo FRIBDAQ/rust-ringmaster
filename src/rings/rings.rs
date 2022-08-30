@@ -1,6 +1,5 @@
 pub mod rings {
     use std::collections::HashMap;
-    use std::sync;
     use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::Duration;
@@ -130,7 +129,7 @@ pub mod rings {
             }
         }
         #[cfg(not(target_os = "linux"))]
-        fn kill_pid(pid: u32) {} // Else can't on windows but need fn for compiler
+        fn kill_pid(_pid: u32) {} // Else can't on windows but need fn for compiler
         ///
         ///  creates the object.  We initially have the ring file
         /// path and then an empty client monitors collection.
@@ -154,10 +153,23 @@ pub mod rings {
         ) -> &mut RingBufferInfo {
             let key = match client.lock().unwrap().client_info {
                 Client::Producer { pid } => pid,
-                Client::Consumer { pid, slot } => pid,
+                Client::Consumer { pid, slot: _slot } => pid,
             };
             self.client_monitors.insert(key, Arc::clone(client));
 
+            self
+        }
+        /// Remove a client from a ring buffer given its pid.
+        ///  
+        /// *  Halt the monitor thread.
+        /// *  *Don't* kill the process.
+        ///
+        /// If the pid does not have an entry this is a silent no-op.
+        ///
+        fn unregister_client(&mut self, pid: u32) -> &mut RingBufferInfo {
+            if let Some(mut info) = self.client_monitors.remove(&pid) {
+                ClientMonitorInfo::stop_monitor(&mut info)
+            }
             self
         }
         ///
@@ -284,7 +296,10 @@ pub mod rings {
                     Client::Producer { pid } => {
                         assert_eq!(1234, pid);
                     }
-                    Client::Consumer { pid, slot } => {
+                    Client::Consumer {
+                        pid: _pid,
+                        slot: _slot,
+                    } => {
                         assert!(false, "Got consumer expected producer");
                     }
                 }
@@ -304,7 +319,7 @@ pub mod rings {
             assert_eq!(1, info.client_monitors.len());
             if let Some(arc) = info.client_monitors.get(&1234) {
                 match arc.lock().unwrap().client_info {
-                    Client::Producer { pid } => {
+                    Client::Producer { pid: _pid } => {
                         assert!(false, "Should have gotten consumer, got producer");
                     }
                     Client::Consumer { pid, slot } => {
@@ -334,13 +349,13 @@ pub mod rings {
             // we'll take it for granted that if inserted they're both
             // ok based on add_1, and add_2
 
-            if let Some(p) = info.client_monitors.get(&1111) {
+            if let Some(_p) = info.client_monitors.get(&1111) {
                 assert!(true);
             } else {
                 assert!(false, "Producer did not get inserted");
             }
 
-            if let Some(c) = info.client_monitors.get(&1234) {
+            if let Some(_c) = info.client_monitors.get(&1234) {
                 assert!(true);
             } else {
                 assert!(false, "Consumer did not get inserted");
@@ -361,7 +376,7 @@ pub mod rings {
             assert_eq!(1, info.client_monitors.len());
             if let Some(c) = info.client_monitors.get(&1234) {
                 match c.lock().unwrap().client_info {
-                    Client::Producer { pid } => {
+                    Client::Producer { pid: _pid } => {
                         assert!(false, "should have been a consumer");
                     }
                     Client::Consumer { pid, slot } => {

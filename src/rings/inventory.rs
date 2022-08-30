@@ -7,10 +7,7 @@
 
 pub mod inventory {
     use nscldaq_ringbuffer::ringbuffer;
-    use std::ffi::OsString;
     use std::fs;
-    use std::fs::DirEntry;
-    use std::io;
     use std::path::Path;
     ///
     /// Inventory the ringbuffers in a directory.
@@ -31,7 +28,7 @@ pub mod inventory {
         for file in iteration {
             let name = file.unwrap().path().into_os_string().into_string().unwrap();
 
-            if let Ok(ring) = ringbuffer::RingBufferMap::new(&name) {
+            if let Ok(_ring) = ringbuffer::RingBufferMap::new(&name) {
                 is_ring(&name);
             } else {
                 not_ring(&name);
@@ -41,8 +38,6 @@ pub mod inventory {
     #[cfg(test)]
     mod inv_test {
         use super::*;
-        use std::ffi::OsString;
-        use std::io;
         use std::path::Path;
         // Note that I _think_ the working dir is the project top dir
         // if these are run via cargo.

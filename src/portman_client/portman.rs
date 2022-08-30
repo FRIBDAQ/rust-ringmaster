@@ -92,7 +92,7 @@ pub mod portman {
                             .try_clone()
                             .unwrap())
                     }
-                    Err(reason) => Err(Error::ConnectionFailed),
+                    Err(_) => Err(Error::ConnectionFailed),
                 }
             }
         }
@@ -145,7 +145,7 @@ pub mod portman {
 
             let mut result: Vec<Allocation> = Vec::new();
 
-            for i in 0..n {
+            for _i in 0..n {
                 let mut allocation_string = String::new();
                 if let Ok(size) = self
                     .reader
@@ -215,11 +215,11 @@ pub mod portman {
                     let me = whoami::username();
                     let request = format!("GIMME {} {}\n", service_name, me);
                     // Send the request
-                    if let Err(e) = socket.write_all(request.as_bytes()) {
+                    if let Err(_e) = socket.write_all(request.as_bytes()) {
                         return Err(Error::ConnectionLost);
                     }
 
-                    if let Err(e) = socket.flush() {
+                    if let Err(_e) = socket.flush() {
                         return Err(Error::ConnectionLost);
                     }
                     //
@@ -259,10 +259,10 @@ pub mod portman {
                 Ok(mut socket) => {
                     // Format and send the message:
 
-                    if let Err(e) = socket.write_all(b"LIST\n") {
+                    if let Err(_e) = socket.write_all(b"LIST\n") {
                         return Err(Error::ConnectionLost);
                     }
-                    if let Err(e) = socket.flush() {
+                    if let Err(_e) = socket.flush() {
                         return Err(Error::ConnectionLost);
                     }
                     // The first reply word will contain the number of service lines to follow:
@@ -371,7 +371,7 @@ pub mod portman {
 
             match portman.make_connection() {
                 Ok(_) => assert!(true),
-                Err(reason) => assert!(false, "Should have connected"),
+                Err(_reason) => assert!(false, "Should have connected"),
             }
         }
         #[test]
@@ -386,7 +386,7 @@ pub mod portman {
         fn get_1() {
             let mut portman = Client::new(30000);
             match portman.get("testing") {
-                Ok(port) => assert!(true),
+                Ok(_port) => assert!(true),
                 Err(e) => assert!(false, "{}", e.to_string()),
             }
         }
@@ -494,7 +494,7 @@ pub mod portman {
             portman.get("service3").unwrap();
             portman.get("service4").unwrap();
 
-            let mut matches = portman.find_by_user("no-such-user").unwrap();
+            let matches = portman.find_by_user("no-such-user").unwrap();
             assert_eq!(0, matches.len());
         }
         #[test]
@@ -505,7 +505,7 @@ pub mod portman {
             portman.get("service3").unwrap();
             portman.get("service4").unwrap();
 
-            let mut matches = portman.find_exact("service3", &whoami::username()).unwrap();
+            let matches = portman.find_exact("service3", &whoami::username()).unwrap();
             assert_eq!(1, matches.len());
             assert_eq!("service3", matches[0].service_name);
             assert_eq!(whoami::username(), matches[0].user_name);
