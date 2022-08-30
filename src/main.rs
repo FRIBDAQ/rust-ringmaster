@@ -237,11 +237,13 @@ fn monitor_client(
         .unwrap()
         .set_read_timeout(Some(Duration::from_secs(1)))
         .unwrap();
+    let mut told_to_halt = false;
     loop {
         if client_info.lock().unwrap().keep_running() {
             let mut b: [u8; 1] = [0];
             match stream.lock().unwrap().read(&mut b) {
                 Ok(_n) => {
+                    info!("Got a read completion");
                     // Actually any successful read is bad.
                     break;
                 }
@@ -251,48 +253,65 @@ fn monitor_client(
                         ErrorKind::WouldBlock => {}
                         ErrorKind::TimedOut => {}
                         _ => {
+                            info!("Got a bad error on read");
                             break;
-                        } // Any other error terminate.
+                        }
                     };
                 }
             };
         } else {
+            told_to_halt = true;
             break;
         }
     }
     if let Ok(_) = stream.lock().unwrap().shutdown(Shutdown::Both) {}
-
+    info!("Shutdown stream to client");
     // Ensure the client has been removed from the ring - in case
     // it failed:
 
     let mut client_pid = 0;
     if let Ok(mut map) = ringbuffer::RingBufferMap::new(&ring) {
+        info!("LOcking client info");
         match client_info.lock().unwrap().client_info {
             rings::rings::Client::Producer { pid } => {
+                info!("Locked");
                 if let Ok(_) = map.free_producer(pid) {}
                 client_pid = pid;
             }
             rings::rings::Client::Consumer { pid, slot } => {
+                info!("Locked");
                 if let Ok(_) = map.free_consumer(slot as usize, pid) {}
                 client_pid = pid;
             }
         }
+        info!("Removed self from ringbuffer");
     }
 
     // Now we need to remove our monitor entry from the
     // set of clients for this ring in the inventory.
     // To do that we turn the ring back into a name
     let ring_name = String::from(Path::new(ring).file_name().unwrap().to_str().unwrap());
-    info!(
-        "Lost connection with {} client of ring {} cleaning up",
-        client_pid, ring_name
-    );
+    if told_to_halt {
+        info!(
+            "Monitor thread for {} client of {} told to halt, cleaning up",
+            client_pid, ring_name
+        );
+    } else {
+        info!(
+            "Lost connection with {} client of ring {} cleaning up",
+            client_pid, ring_name
+        );
+    }
     // We need to be tolerant of the possibility the
     // ring went from our inventory:
 
+    info!("Going to lock inventory");
     if let Some(ring_info) = inventory.lock().unwrap().get_mut(&ring_name) {
+        info!("Inventory locked");
         ring_info.unlist_client(client_pid);
+        info!("Unlisted");
     }
+    info!("Monitor thread stopping");
 }
 
 fn hookup_client(
@@ -414,75 +433,90 @@ fn disconnect_client(
     pid: &str,
     inventory: &SafeInventory,
 ) {
-    if let Ok(pid) = pid.parse::<u32>() {
-        if let Some(ring_info) = inventory.lock().unwrap().get_mut(ring_name) {
-            if let Some(client_info) = ring_info.get_client_info(&pid) {
-                let client_spec = connection_type.split(".").collect::<Vec<&str>>();
-                if (client_spec.len() == 1) && (client_spec[0] == "producer") {
-                    // Valid producer specification
-                    let cinfo = client_info.lock().unwrap().client_info;
-                    if let rings::rings::Client::Producer { pid: _client_pid } = cinfo {
-                        ring_info.unregister_client(pid);
-                    } else {
-                        fail_request(
-                            &mut stream,
-                            format!(
-                                "You gave me a producer spec but the actual client is a consumer"
-                            )
-                            .as_str(),
-                        );
-                    }
-                } else if (client_spec.len() == 2) && (client_spec[0] == "consumer") {
-                    if let Ok(slot) = client_spec[1].parse::<u32>() {
-                        // valid consumer
+    if !is_local_peer(&stream) {
+        fail_request(&mut stream, "DISCONNECT must be local");
+    } else {
+        if let Ok(pid) = pid.parse::<u32>() {
+            // Deadlock below.  holding inventory locked while thread needs it.
+            //
+            if let Some(ring_info) = inventory.lock().unwrap().get_mut(ring_name) {
+                if let Some(client_info) = ring_info.get_client_info(&pid) {
+                    let client_spec = connection_type.split(".").collect::<Vec<&str>>();
+                    if (client_spec.len() == 1) && (client_spec[0] == "producer") {
+                        // Valid producer specification
                         let cinfo = client_info.lock().unwrap().client_info;
-                        if let rings::rings::Client::Consumer {
-                            pid: _pid,
-                            slot: client_slot,
-                        } = cinfo
-                        {
-                            if client_slot == slot {
-                                ring_info.unregister_client(pid);
-                            } else {
-                                fail_request(
-                                    &mut stream,
-                                    format!("Incorrect slot number for client {} : {}", pid, slot)
+                        if let rings::rings::Client::Producer { pid: _client_pid } = cinfo {
+                            ring_info.unregister_client(pid);
+                            if let Ok(_) = stream.write_all(b"OK\n") {}
+                            if let Ok(_) = stream.flush() {}
+                            if let Ok(_) = stream.shutdown(Shutdown::Both) {}
+                        } else {
+                            fail_request(
+                                &mut stream,
+                                format!(
+                                    "You gave me a producer spec but the actual client is a consumer"
+                                )
+                                .as_str(),
+                            );
+                        }
+                    } else if (client_spec.len() == 2) && (client_spec[0] == "consumer") {
+                        if let Ok(slot) = client_spec[1].parse::<u32>() {
+                            // valid consumer
+                            let cinfo = client_info.lock().unwrap().client_info;
+                            if let rings::rings::Client::Consumer {
+                                pid: _pid,
+                                slot: client_slot,
+                            } = cinfo
+                            {
+                                if client_slot == slot {
+                                    ring_info.unregister_client(pid);
+                                    if let Ok(_) = stream.write_all(b"OK\n") {}
+                                    if let Ok(_) = stream.flush() {}
+                                    if let Ok(_) = stream.shutdown(Shutdown::Both) {}
+                                } else {
+                                    fail_request(
+                                        &mut stream,
+                                        format!(
+                                            "Incorrect slot number for client {} : {}",
+                                            pid, slot
+                                        )
                                         .as_str(),
-                                );
+                                    );
+                                }
+                            } else {
+                                fail_request(&mut stream, "Expected consumer but got producer");
                             }
                         } else {
-                            fail_request(&mut stream, "Expected consumer but got producer");
+                            fail_request(
+                                &mut stream,
+                                format!("Invalid consumer slot specification {}", client_spec[1])
+                                    .as_str(),
+                            );
                         }
                     } else {
                         fail_request(
                             &mut stream,
-                            format!("Invalid consumer slot specification {}", client_spec[1])
-                                .as_str(),
+                            format!("Invalid client specification {}", connection_type).as_str(),
                         );
                     }
                 } else {
                     fail_request(
                         &mut stream,
-                        format!("Invalid client specification {}", connection_type).as_str(),
+                        format!("PID {} Is not a client in ring {}", pid, ring_name).as_str(),
                     );
                 }
             } else {
                 fail_request(
                     &mut stream,
-                    format!("PID {} Is not a client in ring {}", pid, ring_name).as_str(),
+                    format!("No ring named {} in inventory", ring_name).as_str(),
                 );
             }
         } else {
             fail_request(
                 &mut stream,
-                format!("No ring named {} in inventory", ring_name).as_str(),
+                format!("PID must be parsable as an unsigned int but was {}", pid).as_str(),
             );
         }
-    } else {
-        fail_request(
-            &mut stream,
-            format!("PID must be parsable as an unsigned int but was {}", pid).as_str(),
-        );
     }
 }
 ///  unregister a ring that was deleted.

@@ -81,6 +81,7 @@ pub mod rings {
         ///
         pub fn stop_monitor(me: &mut Arc<Mutex<Self>>) {
             me.lock().unwrap().should_run = false;
+
             //
             // Note that the code below leaves self.handle = None
             // which is cool since we can then support multiple stop_monitor
@@ -90,20 +91,23 @@ pub mod rings {
                 me.lock().unwrap().should_run = true;
                 return;
             }
+
             // Key point this loop allows the mutex to be
             // unlocked from time to time.
             loop {
-                let lock = me.lock().unwrap();
-                if let Some(handle) = &lock.handle {
-                    if handle.is_finished() {
-                        break;
-                    } else {
-                        thread::sleep(Duration::from_millis(100));
+                {
+                    let lock = me.lock().unwrap();
+
+                    if let Some(handle) = &lock.handle {
+                        if handle.is_finished() {
+                            break;
+                        }
                     }
                 }
+
+                thread::sleep(Duration::from_millis(100)); // sb. unlocked.
             }
             // Now we can join:
-
             me.lock().unwrap().handle.take().unwrap().join().unwrap();
         }
         ///

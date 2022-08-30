@@ -31,14 +31,14 @@
                 "args": [
                     "build",
                     "--bin=nscldaq_ringmaster",
-                    "--package=nscldaq_ringmaster"
+                    "--package=nscldaq_ringmaster",
                 ],
                 "filter": {
                     "name": "nscldaq_ringmaster",
                     "kind": "bin"
                 }
             },
-            "args": [],
+            "args": ["-d .", "-l logfile.log"],
             "cwd": "${workspaceFolder}"
         },
         {
