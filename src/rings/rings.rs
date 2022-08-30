@@ -29,7 +29,7 @@ pub mod rings {
     pub struct ClientMonitorInfo {
         handle: Option<thread::JoinHandle<()>>,
         pub should_run: bool,
-        client_info: Client,
+        pub client_info: Client,
     }
     impl ClientMonitorInfo {
         ///

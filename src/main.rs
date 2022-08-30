@@ -19,7 +19,7 @@ use std::time::Duration;
 // types of convenience:
 
 type RingInventory = HashMap<String, rings::rings::RingBufferInfo>;
-
+type SafeInventory = Arc<Mutex<RingInventory>>;
 struct RingInfo {
     name: String,
     size: usize,
@@ -45,7 +45,7 @@ fn main() {
         "Ringmaster doing inventory of existing rings on {}",
         options.directory
     );
-    let mut ring_inventory = inventory_rings(&options.directory);
+    let ring_inventory = inventory_rings(&options.directory);
 
     info!("Obtaining port from portmanager...");
     let mut port_man = portman::Client::new(options.portman);
@@ -68,7 +68,7 @@ fn main() {
         service_port
     );
 
-    server(service_port, &options.directory, &mut ring_inventory);
+    server(service_port, &options.directory, ring_inventory);
 }
 ///
 /// Main server function.  We make a listener, and process requests
@@ -79,16 +79,17 @@ fn main() {
 /// *   The directory so that we know where the ringbuffers are.
 /// *   A mutable reference to the ringbufer inventory to operate on.
 ///
-fn server(listen_port: u16, ring_directory: &str, ring_inventory: &mut RingInventory) {
+fn server(listen_port: u16, ring_directory: &str, ring_inventory: RingInventory) {
     let listener = TcpListener::bind(format!("0.0.0.0:{}", listen_port));
     if let Err(l) = listener {
         error!("Failed to listen on {} : {}", listen_port, l.to_string());
         process::exit(-1);
     }
+    let ring_inventory = Arc::new(Mutex::new(ring_inventory));
     for client in listener.unwrap().incoming() {
         match client {
             Ok(stream) => {
-                handle_request(stream, ring_directory, ring_inventory);
+                handle_request(stream, ring_directory, &ring_inventory);
             }
             Err(e) => {
                 error!("Failed to accept a client: {}", e.to_string());
@@ -109,7 +110,7 @@ fn server(listen_port: u16, ring_directory: &str, ring_inventory: &mut RingInven
 /// functions specific to the request.  Those functions are expected to
 /// reply to the client and, if necessary, shutdown the stream.
 ///
-fn handle_request(mut stream: TcpStream, dir: &str, inventory: &mut RingInventory) {
+fn handle_request(mut stream: TcpStream, dir: &str, inventory: &SafeInventory) {
     // To read a line, make a BufReader as we've done in other.  We'll then
     // use get_request to read the line and return the busted up request
     // as a vector of strings.
@@ -170,6 +171,7 @@ fn handle_request(mut stream: TcpStream, dir: &str, inventory: &mut RingInventor
                     }
                     connect_client(
                         stream,
+                        &dir,
                         &request[1],
                         &request[2],
                         &request[3],
@@ -212,7 +214,9 @@ fn is_local_peer(stream: &TcpStream) -> bool {
 ///
 fn monitor_client(
     stream: Arc<Mutex<TcpStream>>,
+    ring: &str,
     client_info: Arc<Mutex<rings::rings::ClientMonitorInfo>>,
+    inventory: SafeInventory,
 ) {
     stream
         .lock()
@@ -220,7 +224,7 @@ fn monitor_client(
         .set_read_timeout(Some(Duration::from_secs(1)))
         .unwrap();
     loop {
-        if client_info.lock().unwrap().should_run {
+        if client_info.lock().unwrap().keep_running() {
             let mut b: [u8; 1] = [0];
             match stream.lock().unwrap().read(&mut b) {
                 Ok(_n) => {
@@ -244,12 +248,40 @@ fn monitor_client(
     }
     if let Ok(_) = stream.lock().unwrap().shutdown(Shutdown::Both) {}
 
-    // TODO:  Remove self from the rings info associated with us.
+    // Ensure the client has been removed from the ring - in case
+    // it failed:
+
+    let mut client_pid = 0;
+    if let Ok(mut map) = ringbuffer::RingBufferMap::new(&ring) {
+        match client_info.lock().unwrap().client_info {
+            rings::rings::Client::Producer { pid } => {
+                if let Ok(_) = map.free_producer(pid) {}
+                client_pid = pid;
+            }
+            rings::rings::Client::Consumer { pid, slot } => {
+                if let Ok(_) = map.free_consumer(slot as usize, pid) {}
+                client_pid = pid;
+            }
+        }
+    }
+    // Now we need to remove our monitor entry from the
+    // set of clients for this ring in the inventory.
+    // To do that we turn the ring back into a name
+    let ring_name = String::from(Path::new(ring).file_name().unwrap().to_str().unwrap());
+
+    // We need to be tolerant of the possibility the
+    // ring went from our inventory:
+
+    if let Some(ring_info) = inventory.lock().unwrap().get_mut(&ring_name) {
+        ring_info.unregister_client(client_pid);
+    }
 }
 
 fn hookup_client(
     mut stream: TcpStream,
+    ring: &str,
     client: rings::rings::Client,
+    inventory: &SafeInventory,
 ) -> Arc<Mutex<rings::rings::ClientMonitorInfo>> {
     if let Ok(_) = stream.write_all(b"OK\n") {
         if let Ok(_) = stream.flush() {}
@@ -259,8 +291,15 @@ fn hookup_client(
     let monitor_info = rings::rings::ClientMonitorInfo::new(client);
     let safe_monitor = Arc::new(Mutex::new(monitor_info));
     let result = Arc::clone(&safe_monitor);
+    let ring = String::from(ring);
+    let thread_inventory = Arc::clone(inventory);
     result.lock().unwrap().set_monitor(thread::spawn(move || {
-        monitor_client(Arc::clone(&stream), Arc::clone(&safe_monitor));
+        monitor_client(
+            Arc::clone(&stream),
+            &ring,
+            Arc::clone(&safe_monitor),
+            thread_inventory,
+        );
     }));
     result
 }
@@ -269,19 +308,26 @@ fn hookup_client(
 /// When we return, the monitor is running and has a stream to listen to
 /// as well as the way to unregister itself.
 ///
-fn connect_producer(stream: TcpStream, pid: u32) -> Arc<Mutex<rings::rings::ClientMonitorInfo>> {
+fn connect_producer(
+    stream: TcpStream,
+    ring: &str,
+    pid: u32,
+    inventory: &SafeInventory,
+) -> Arc<Mutex<rings::rings::ClientMonitorInfo>> {
     let client = rings::rings::Client::Producer { pid };
-    hookup_client(stream, client)
+    hookup_client(stream, ring, client, inventory)
 }
 ///
 ///  Connect a consumer to a ring.
 fn connect_consumer(
     stream: TcpStream,
+    ring: &str,
     slot: u32,
     pid: u32,
+    inventory: &SafeInventory,
 ) -> Arc<Mutex<rings::rings::ClientMonitorInfo>> {
     let client = rings::rings::Client::Consumer { pid, slot };
-    hookup_client(stream, client)
+    hookup_client(stream, ring, client, inventory)
 }
 /// connect a client to a ring:
 ///
@@ -295,24 +341,28 @@ fn connect_consumer(
 ///
 fn connect_client(
     mut stream: TcpStream,
+    dir: &str,
     ring_name: &str,
     connection_type: &str,
     pid: &str,
     _comment: &str, // Unusedi n this version.
-    inventory: &mut RingInventory,
+    inventory: &SafeInventory,
 ) {
     if !is_local_peer(&stream) {
         fail_request(&mut stream, "CONNECT must be from a local process");
     } else {
-        if let Some(ring) = inventory.get_mut(ring_name) {
+        if let Some(ring) = inventory.lock().unwrap().get_mut(ring_name) {
+            // Turn this into the ring path:
+            let path = compute_ring_buffer_path(&dir, &ring_name);
             if let Ok(pid_value) = pid.parse::<u32>() {
                 let connection = connection_type.split(".").collect::<Vec<&str>>();
                 if connection.len() == 1 && connection[0] == "producer" {
-                    let client_info = connect_producer(stream, pid_value);
+                    let client_info = connect_producer(stream, &path, pid_value, &inventory);
                     ring.add_client(&Arc::clone(&client_info));
                 } else if connection.len() == 2 && connection[0] == "consumer" {
                     if let Ok(slot) = connection[1].parse::<u32>() {
-                        let client_info = connect_consumer(stream, slot, pid_value);
+                        let client_info =
+                            connect_consumer(stream, &path, slot, pid_value, &inventory);
                         ring.add_client(&Arc::clone(&client_info));
                     } else {
                         fail_request(&mut stream, "Invalid consumer slot id");
@@ -351,8 +401,9 @@ fn unregister_ring(
     stream: &mut TcpStream,
     directory: &str,
     ring_name: &str,
-    inventory: &mut RingInventory,
+    inventory: &SafeInventory,
 ) {
+    let mut inventory = inventory.lock().unwrap();
     if is_local_peer(&stream) {
         // The inventory must contain the ring.  The file need not be present
         // as in theory there was once a ring buffer file named that if
@@ -397,7 +448,8 @@ fn unregister_ring(
 /// If all of that holds the ring is added to the inventory and
 /// an "OK\n" response is emitted.  Regardless, the connection is closed.
 ///
-fn register_ring(mut stream: &mut TcpStream, dir: &str, name: &str, inventory: &mut RingInventory) {
+fn register_ring(mut stream: &mut TcpStream, dir: &str, name: &str, inventory: &SafeInventory) {
+    let mut inventory = inventory.lock().unwrap();
     if is_local_peer(&stream) {
         if inventory.contains_key(name) {
             fail_request(
@@ -410,7 +462,7 @@ fn register_ring(mut stream: &mut TcpStream, dir: &str, name: &str, inventory: &
             full_path.push(name);
             let full_path = String::from(full_path.to_str().unwrap());
             if let Ok(_map) = ringbuffer::RingBufferMap::new(&full_path) {
-                add_ring(name, inventory);
+                add_ring(name, &mut inventory);
                 if let Ok(_) = stream.write_all(b"Ok\n") {}
                 if let Ok(_) = stream.flush() {}
                 if let Ok(_) = stream.shutdown(Shutdown::Both) {}
@@ -449,8 +501,9 @@ fn register_ring(mut stream: &mut TcpStream, dir: &str, name: &str, inventory: &
 ///
 /// ##### Note
 ///    If the ring has disappeared, we clean, and any watches up.
-fn list_rings(mut stream: TcpStream, directory: &str, inventory: &mut RingInventory) {
+fn list_rings(mut stream: TcpStream, directory: &str, inventory: &SafeInventory) {
     let mut gone_rings = Vec::<String>::new();
+    let mut inventory = inventory.lock().unwrap();
 
     if let Ok(_) = stream.write_all(b"Ok\n") {
         let mut listing = tcllist::TclList::new();
