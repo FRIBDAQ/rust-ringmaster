@@ -3,7 +3,7 @@ pub mod rings {
     use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::Duration;
-    #[cfg(target_os="linux")]
+    #[cfg(target_os = "linux")]
     use sysinfo::{Pid, PidExt, ProcessExt, System};
     ///
     /// This enum provides information about the
@@ -109,7 +109,7 @@ pub mod rings {
         ///
         /// Determine if a monitor should keep running:
         ///
-        fn keep_running(&self) -> bool {
+        pub fn keep_running(&self) -> bool {
             return self.should_run;
         }
     }
@@ -167,7 +167,7 @@ pub mod rings {
         ///
         /// If the pid does not have an entry this is a silent no-op.
         ///
-        fn unregister_client(&mut self, pid: u32) -> &mut RingBufferInfo {
+        pub fn unregister_client(&mut self, pid: u32) -> &mut RingBufferInfo {
             if let Some(mut info) = self.client_monitors.remove(&pid) {
                 ClientMonitorInfo::stop_monitor(&mut info)
             }
