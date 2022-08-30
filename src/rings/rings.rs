@@ -3,6 +3,7 @@ pub mod rings {
     use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::Duration;
+    #[cfg(target_os="linux")]
     use sysinfo::{Pid, PidExt, ProcessExt, System};
     ///
     /// This enum provides information about the
