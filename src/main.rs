@@ -1,5 +1,5 @@
 use clap::{App, Arg};
-use log::{error, info, trace, warn};
+use log::{error, info};
 use nscldaq_ringbuffer::ringbuffer;
 use nscldaq_ringmaster::portman_client::portman::*;
 use nscldaq_ringmaster::rings::inventory;
@@ -7,14 +7,14 @@ use nscldaq_ringmaster::rings::rings;
 use nscldaq_ringmaster::tcllist;
 use simple_logging;
 use std::collections::HashMap;
-use std::ffi::OsString;
 use std::fs;
-use std::io::Error;
-use std::io::{BufRead, BufReader, Write};
-use std::net::{Ipv4Addr, Ipv6Addr, Shutdown, TcpListener, TcpStream};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
+use std::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 // types of convenience:
 
@@ -87,7 +87,7 @@ fn server(listen_port: u16, ring_directory: &str, ring_inventory: &mut RingInven
     }
     for client in listener.unwrap().incoming() {
         match client {
-            Ok(mut stream) => {
+            Ok(stream) => {
                 handle_request(stream, ring_directory, ring_inventory);
             }
             Err(e) => {
@@ -151,6 +151,33 @@ fn handle_request(mut stream: TcpStream, dir: &str, inventory: &mut RingInventor
                     unregister_ring(&mut stream, dir, &request[1], inventory);
                 }
             }
+            "CONNECT" => {
+                info!(
+                    "Connect request from {} will enforce locality",
+                    stream.peer_addr().unwrap()
+                );
+                // We need at least 4 no more than 5 command words.
+                // In this implementation, the comment is optional.
+
+                if (request.len() < 4) || (request.len() > 5) {
+                    fail_request(&mut stream,
+                        "Unregister must have at least name, type, pid and at most an additional optional comment"
+                    );
+                } else {
+                    let mut comment = String::from("");
+                    if request.len() == 5 {
+                        comment = String::from(request[4].as_str());
+                    }
+                    connect_client(
+                        stream,
+                        &request[1],
+                        &request[2],
+                        &request[3],
+                        &comment,
+                        inventory,
+                    );
+                }
+            }
             _ => {
                 fail_request(&mut stream, "Invalid Request");
             }
@@ -170,11 +197,135 @@ fn handle_request(mut stream: TcpStream, dir: &str, inventory: &mut RingInventor
 fn is_local_peer(stream: &TcpStream) -> bool {
     if let Ok(peer) = stream.peer_addr() {
         match peer {
-            V4 => peer.ip() == Ipv4Addr::new(127, 0, 0, 1),
-            V6 => peer.ip() == Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1),
+            SocketAddr::V4(p) => *p.ip() == Ipv4Addr::new(127, 0, 0, 1),
+            SocketAddr::V6(p) => *p.ip() == Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1),
         }
     } else {
         false
+    }
+}
+/// monitor a client:
+///  Set a read timeout on the stream.
+///  If there's input on the stream -- that's bad kill self.
+///  If asked to exit, that's bad so kill self.
+///  Doing this requires a timeout on the reads from the stream.
+///
+fn monitor_client(
+    stream: Arc<Mutex<TcpStream>>,
+    client_info: Arc<Mutex<rings::rings::ClientMonitorInfo>>,
+) {
+    stream
+        .lock()
+        .unwrap()
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    loop {
+        if client_info.lock().unwrap().should_run {
+            let mut b: [u8; 1] = [0];
+            match stream.lock().unwrap().read(&mut b) {
+                Ok(_n) => {
+                    // Actually any successful read is bad.
+                    break;
+                }
+                Err(e) => {
+                    // Any time out error allows additional passes.
+                    match e.kind() {
+                        ErrorKind::WouldBlock => {}
+                        ErrorKind::TimedOut => {}
+                        _ => {
+                            break;
+                        } // Any other error terminate.
+                    };
+                }
+            };
+        } else {
+            break;
+        }
+    }
+    if let Ok(_) = stream.lock().unwrap().shutdown(Shutdown::Both) {}
+
+    // TODO:  Remove self from the rings info associated with us.
+}
+
+fn hookup_client(
+    mut stream: TcpStream,
+    client: rings::rings::Client,
+) -> Arc<Mutex<rings::rings::ClientMonitorInfo>> {
+    if let Ok(_) = stream.write_all(b"OK\n") {
+        if let Ok(_) = stream.flush() {}
+    }
+    let stream = stream.try_clone().unwrap();
+    let stream = Arc::new(Mutex::new(stream));
+    let monitor_info = rings::rings::ClientMonitorInfo::new(client);
+    let safe_monitor = Arc::new(Mutex::new(monitor_info));
+    let result = Arc::clone(&safe_monitor);
+    result.lock().unwrap().set_monitor(thread::spawn(move || {
+        monitor_client(Arc::clone(&stream), Arc::clone(&safe_monitor));
+    }));
+    result
+}
+///
+/// produce the Arc::Mutex::ClientMonitorInfo for a producer.
+/// When we return, the monitor is running and has a stream to listen to
+/// as well as the way to unregister itself.
+///
+fn connect_producer(stream: TcpStream, pid: u32) -> Arc<Mutex<rings::rings::ClientMonitorInfo>> {
+    let client = rings::rings::Client::Producer { pid };
+    hookup_client(stream, client)
+}
+///
+///  Connect a consumer to a ring.
+fn connect_consumer(
+    stream: TcpStream,
+    slot: u32,
+    pid: u32,
+) -> Arc<Mutex<rings::rings::ClientMonitorInfo>> {
+    let client = rings::rings::Client::Consumer { pid, slot };
+    hookup_client(stream, client)
+}
+/// connect a client to a ring:
+///
+/// *  The client must be local.
+/// *  The ring must be in our inventory.
+/// *  The client must maintain a connection to the server,
+/// once that connection is lost, the client registration is un-done but
+/// the client is not killed (only the slot is freed).  To this end, we
+/// wrap the stream clone in n Arc::Mutex::TcpStream which is feed off to
+/// a monitor thread to watch for any client input or drop.
+///
+fn connect_client(
+    mut stream: TcpStream,
+    ring_name: &str,
+    connection_type: &str,
+    pid: &str,
+    _comment: &str, // Unusedi n this version.
+    inventory: &mut RingInventory,
+) {
+    if !is_local_peer(&stream) {
+        fail_request(&mut stream, "CONNECT must be from a local process");
+    } else {
+        if let Some(ring) = inventory.get_mut(ring_name) {
+            if let Ok(pid_value) = pid.parse::<u32>() {
+                let connection = connection_type.split(".").collect::<Vec<&str>>();
+                if connection.len() == 1 && connection[0] == "producer" {
+                    let client_info = connect_producer(stream, pid_value);
+                    ring.add_client(&Arc::clone(&client_info));
+                } else if connection.len() == 2 && connection[0] == "consumer" {
+                    if let Ok(slot) = connection[1].parse::<u32>() {
+                        let client_info = connect_consumer(stream, slot, pid_value);
+                        ring.add_client(&Arc::clone(&client_info));
+                    } else {
+                        fail_request(&mut stream, "Invalid consumer slot id");
+                    }
+                } else {
+                    fail_request(&mut stream, "Invalid connection type");
+                }
+            } else {
+                fail_request(&mut stream, "Invalid process ID");
+            }
+        } else {
+            fail_request(&mut stream, "No such ringbuffer in inventory");
+        }
     }
 }
 ///
@@ -258,7 +409,7 @@ fn register_ring(mut stream: &mut TcpStream, dir: &str, name: &str, inventory: &
             full_path.push(dir);
             full_path.push(name);
             let full_path = String::from(full_path.to_str().unwrap());
-            if let Ok(map) = ringbuffer::RingBufferMap::new(&full_path) {
+            if let Ok(_map) = ringbuffer::RingBufferMap::new(&full_path) {
                 add_ring(name, inventory);
                 if let Ok(_) = stream.write_all(b"Ok\n") {}
                 if let Ok(_) = stream.flush() {}
