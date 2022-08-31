@@ -1,10 +1,10 @@
 use clap::{App, Arg};
 use log::{error, info};
 use nscldaq_ringbuffer::ringbuffer;
-use nscldaq_ringmaster::portman_client::portman::*;
 use nscldaq_ringmaster::rings::inventory;
 use nscldaq_ringmaster::rings::rings;
 use nscldaq_ringmaster::tcllist;
+use portman_client::*;
 use simple_logging;
 use std::collections::HashMap;
 use std::fs;
