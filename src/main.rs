@@ -16,6 +16,12 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+#[cfg(target_os = "windows")]
+use std::os::windows::io::*;
+
+#[cfg(target_os = "linux")]
+use std::os::linux::io::*;
+
 // types of convenience:
 
 type RingInventory = HashMap<String, rings::rings::RingBufferInfo>;
@@ -984,4 +990,25 @@ fn add_ring(name: &str, list: &mut HashMap<String, rings::rings::RingBufferInfo>
 fn log_non_ring(name: &str) {
     let filename = filename_from_path(name);
     info!("{} is not a ring buffer - ignored", filename);
+}
+
+///
+/// This function takes a TcpStream and turns it into
+/// an process::Stdio object.  How this is done is
+/// O/S specific but the result is not and allows us to
+/// spawn processes with stdout set to the stream.
+/// This is essential for the REMOTE operation
+/// which will require us to spin off a ring2stdout process
+/// To feed data from the ring to the remote requestor.
+///
+#[cfg(target_os = "linux")]
+fn socket_to_stdio(mut socket: TcpStream) -> process::Stdio {
+    let sock = socket.as_raw_fd();
+    unsafe { process::Stdio::from_raw_fd(sock) }
+}
+
+#[cfg(target_os = "windows")]
+fn socket_to_stdio(mut socket: TcpStream) -> process::Stdio {
+    let sock = socket.as_raw_socket();
+    unsafe { process::Stdio::from_raw_handle(sock as RawHandle) }
 }
