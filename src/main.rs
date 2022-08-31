@@ -4,7 +4,7 @@ use nscldaq_ringbuffer::ringbuffer;
 use nscldaq_ringmaster::rings::inventory;
 use nscldaq_ringmaster::rings::rings;
 use nscldaq_ringmaster::tcllist;
-use portman_client::*;
+use portman_client;
 use simple_logging;
 use std::collections::HashMap;
 use std::fs;
@@ -54,7 +54,7 @@ fn main() {
     let ring_inventory = inventory_rings(&options.directory);
 
     info!("Obtaining port from portmanager...");
-    let mut port_man = portman::Client::new(options.portman);
+    let mut port_man = portman_client::Client::new(options.portman);
     let service_port: u16;
     match port_man.get("RingMaster") {
         Ok(p) => {
@@ -1002,13 +1002,13 @@ fn log_non_ring(name: &str) {
 /// To feed data from the ring to the remote requestor.
 ///
 #[cfg(target_os = "linux")]
-fn socket_to_stdio(mut socket: TcpStream) -> process::Stdio {
+fn socket_to_stdio(socket: TcpStream) -> process::Stdio {
     let sock = socket.as_raw_fd();
     unsafe { process::Stdio::from_raw_fd(sock) }
 }
 
 #[cfg(target_os = "windows")]
-fn socket_to_stdio(mut socket: TcpStream) -> process::Stdio {
+fn socket_to_stdio(socket: TcpStream) -> process::Stdio {
     let sock = socket.as_raw_socket();
     unsafe { process::Stdio::from_raw_handle(sock as RawHandle) }
 }

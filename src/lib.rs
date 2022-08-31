@@ -180,7 +180,5 @@
 //!         *  The number of bytes of backlog for that consumer.
 pub mod tcllist;
 pub use tcllist::*;
-pub mod portman_client;
 pub mod rings;
-pub use portman_client::*;
 pub use rings::*;
