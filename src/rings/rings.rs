@@ -65,7 +65,12 @@ pub mod rings {
             self.should_run = true;
             self.handle = Some(handle);
         }
-
+        /// Schedule the monitor to stop
+        ///  but don't wait for it
+        ///
+        pub fn schedule_stop_monitor(me: &mut Arc<Mutex<Self>>) {
+            me.lock().unwrap().should_run = false;
+        }
         ///
         /// stop_monitor
         ///    Requests that the monitor thread stop and blocks
@@ -190,7 +195,7 @@ pub mod rings {
         ///
         pub fn unregister_client(&mut self, pid: u32) -> &mut RingBufferInfo {
             if let Some(mut info) = self.client_monitors.remove(&pid) {
-                ClientMonitorInfo::stop_monitor(&mut info)
+                ClientMonitorInfo::schedule_stop_monitor(&mut info)
             }
             self
         }

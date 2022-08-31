@@ -243,7 +243,6 @@ fn monitor_client(
             let mut b: [u8; 1] = [0];
             match stream.lock().unwrap().read(&mut b) {
                 Ok(_n) => {
-                    info!("Got a read completion");
                     // Actually any successful read is bad.
                     break;
                 }
@@ -253,7 +252,6 @@ fn monitor_client(
                         ErrorKind::WouldBlock => {}
                         ErrorKind::TimedOut => {}
                         _ => {
-                            info!("Got a bad error on read");
                             break;
                         }
                     };
@@ -265,26 +263,21 @@ fn monitor_client(
         }
     }
     if let Ok(_) = stream.lock().unwrap().shutdown(Shutdown::Both) {}
-    info!("Shutdown stream to client");
     // Ensure the client has been removed from the ring - in case
     // it failed:
 
     let mut client_pid = 0;
     if let Ok(mut map) = ringbuffer::RingBufferMap::new(&ring) {
-        info!("LOcking client info");
         match client_info.lock().unwrap().client_info {
             rings::rings::Client::Producer { pid } => {
-                info!("Locked");
                 if let Ok(_) = map.free_producer(pid) {}
                 client_pid = pid;
             }
             rings::rings::Client::Consumer { pid, slot } => {
-                info!("Locked");
                 if let Ok(_) = map.free_consumer(slot as usize, pid) {}
                 client_pid = pid;
             }
         }
-        info!("Removed self from ringbuffer");
     }
 
     // Now we need to remove our monitor entry from the
@@ -305,11 +298,8 @@ fn monitor_client(
     // We need to be tolerant of the possibility the
     // ring went from our inventory:
 
-    info!("Going to lock inventory");
     if let Some(ring_info) = inventory.lock().unwrap().get_mut(&ring_name) {
-        info!("Inventory locked");
         ring_info.unlist_client(client_pid);
-        info!("Unlisted");
     }
     info!("Monitor thread stopping");
 }
@@ -439,6 +429,7 @@ fn disconnect_client(
         if let Ok(pid) = pid.parse::<u32>() {
             // Deadlock below.  holding inventory locked while thread needs it.
             //
+
             if let Some(ring_info) = inventory.lock().unwrap().get_mut(ring_name) {
                 if let Some(client_info) = ring_info.get_client_info(&pid) {
                     let client_spec = connection_type.split(".").collect::<Vec<&str>>();
@@ -446,7 +437,9 @@ fn disconnect_client(
                         // Valid producer specification
                         let cinfo = client_info.lock().unwrap().client_info;
                         if let rings::rings::Client::Producer { pid: _client_pid } = cinfo {
+                            info!("Scheduling stop of monitor");
                             ring_info.unregister_client(pid);
+                            info!("Back from stop schedule");
                             if let Ok(_) = stream.write_all(b"OK\n") {}
                             if let Ok(_) = stream.flush() {}
                             if let Ok(_) = stream.shutdown(Shutdown::Both) {}
