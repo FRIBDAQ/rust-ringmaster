@@ -1,4 +1,3 @@
-
 pub mod tcllist;
 use clap::{App, Arg};
 use log::{error, info};
@@ -207,7 +206,7 @@ fn handle_request(mut stream: TcpStream, options: &ProgramOptions, inventory: &S
                 // used by non NSCLDAQ programs to get a pipe from the ring.
                 info!("Remote request from {}", stream.peer_addr().unwrap());
                 if request.len() == 2 {
-                    hoist_data(stream, &request[1], &options);
+                    hoist_data(&mut stream, &request[1], &options, &inventory);
                 } else {
                     fail_request(&mut stream, "Invalid request length");
                 }
@@ -690,7 +689,82 @@ fn list_rings(mut stream: TcpStream, directory: &str, inventory: &SafeInventory)
 //      *  --comment   - Is "Hoisting to {}" where {} is replaced by the
 //                       address of the request's peer.
 //
-fn hoist_data(mut stream: TcpStream, ring: &str, options: &ProgramOptions) {}
+fn hoist_data(
+    stream: &mut TcpStream,
+    ring: &str,
+    options: &ProgramOptions,
+    inventory: &SafeInventory,
+) {
+    // Validate that the ring is in our ring inventory:
+    // Gettin gthe bool holds the lock minmally.
+
+    let ring_exists = inventory.lock().unwrap().contains_key(ring);
+    if ring_exists {
+        let process_stdout = socket_to_stdio(stream);
+        let dir_arg = String::from(options.directory.as_str());
+        let ring_arg = String::from(ring);
+        let port_arg = options.portman.to_string();
+        let comment_arg = format!("Hoisting to {}", stream.peer_addr().unwrap());
+
+        // Output our success string and start the client program:
+
+        match stream.write_all(b"OK BINARY FOLLOWS\n") {
+            Ok(_) => {
+                if let Err(e) = stream.flush() {
+                    error!("Failed to flush BINARY FOLLOWS string {}", e);
+                } else {
+                    // can start the child.
+
+                    start_hoister(process_stdout, &dir_arg, &ring_arg, &port_arg, &comment_arg);
+                }
+            }
+            Err(e) => {
+                // We just give up on error logging that.
+
+                error!("Failed to send OK BINARY FOLLOWS  string {}", e);
+            }
+        }
+    } else {
+        fail_request(
+            stream,
+            format!("{} is not in the ring master's inventory", ring).as_ref(),
+        );
+    }
+}
+// Actually start the hoister:
+
+fn start_hoister(
+    proc_stdout: process::Stdio,
+    rings_dir: &str,
+    ring_name: &str,
+    portman: &str,
+    comment: &str,
+) {
+    let hoister = process::Command::new("ring2stdout")
+        .args([
+            "--directory",
+            rings_dir,
+            "--ring",
+            ring_name,
+            "--port",
+            portman,
+            "--comment",
+            comment,
+        ])
+        .stdout(proc_stdout)
+        .stderr(process::Stdio::null())
+        .stdin(process::Stdio::null())
+        .spawn();
+    match hoister {
+        Ok(_) => {
+            info!("Started hoister for {} : {}", ring_name, comment);
+        }
+        Err(e) => {
+            error!("Unable to spawn hoister process: {}", e);
+        }
+    }
+}
+
 /// Given a ring info struct, and it's name turns it into a Tcl list that
 /// describes that ring.
 ///
@@ -1026,13 +1100,13 @@ fn log_non_ring(name: &str) {
 /// To feed data from the ring to the remote requestor.
 ///
 #[cfg(target_os = "linux")]
-fn socket_to_stdio(socket: TcpStream) -> process::Stdio {
+fn socket_to_stdio(socket: &TcpStream) -> process::Stdio {
     let sock = socket.as_raw_fd();
     unsafe { process::Stdio::from_raw_fd(sock) }
 }
 
 #[cfg(target_os = "windows")]
-fn socket_to_stdio(socket: TcpStream) -> process::Stdio {
+fn socket_to_stdio(socket: &TcpStream) -> process::Stdio {
     let sock = socket.as_raw_socket();
     unsafe { process::Stdio::from_raw_handle(sock as RawHandle) }
 }
