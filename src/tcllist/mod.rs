@@ -31,4 +31,4 @@
 //! will in general return the list itself to suppor chaining  as
 //! shown in the code that builds ```inner_list```.
 pub mod tcllist;
-pub use self::tcllist::tcllist::*;
+pub use self::tcllist::*;
