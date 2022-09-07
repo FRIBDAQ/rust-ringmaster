@@ -4,8 +4,8 @@ use log::{error, info};
 use nscldaq_ringbuffer::ringbuffer;
 use nscldaq_ringmaster::rings::inventory;
 use nscldaq_ringmaster::rings::rings;
-use portman_client;
-use simple_logging;
+//use portman_client;
+//use simple_logging;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
@@ -20,7 +20,7 @@ use std::time::Duration;
 use std::os::windows::io::*;
 
 #[cfg(target_os = "linux")]
-use std::os::linux::io::*;
+use std::os::unix::io::*;
 
 // types of convenience:
 
@@ -164,12 +164,12 @@ fn handle_request(mut stream: TcpStream, options: &ProgramOptions, inventory: &S
                     "Connect request from {} will enforce locality",
                     stream.peer_addr().unwrap()
                 );
-                // We need at least 4 no more than 5 command words.
+                // We need at least 4
                 // In this implementation, the comment is optional.
 
-                if (request.len() < 4) || (request.len() > 5) {
+                if request.len() < 4  {
                     fail_request(&mut stream,
-                        "Unregister must have at least name, type, pid and at most an additional optional comment"
+                        "Unregister must have at least name, type, pid"
                     );
                 } else {
                     let mut comment = String::from("");
@@ -741,7 +741,7 @@ fn start_hoister(
     comment: &str,
 ) {
     let hoister = process::Command::new("ring2stdout")
-        .args([
+        .args(&[
             "--directory",
             rings_dir,
             "--ring",
@@ -827,13 +827,13 @@ fn get_ring_list_info(dir: &str, name: &str) -> Result<RingInfo, String> {
 /// or 0 if there are no consumers
 ///
 fn min_gettable(status: &ringbuffer::RingStatus) -> usize {
-    let mut result = usize::MAX;
+    let mut result = 0xffffffffffffffff as usize;
     for item in &status.consumer_usage {
         if item.available < result {
             result = item.available
         }
     }
-    if result == usize::MAX {
+    if result == 0xffffffffffffffff as usize  {
         // no consumers likely
         result = 0;
     }

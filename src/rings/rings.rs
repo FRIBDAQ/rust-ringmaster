@@ -4,7 +4,7 @@ pub mod rings {
     use std::thread;
     use std::time::Duration;
     #[cfg(target_os = "linux")]
-    use sysinfo::{Pid, PidExt, ProcessExt, System};
+    use sysinfo::{Pid,  ProcessExt, System, SystemExt, Signal};
     ///
     /// This enum provides information about the
     /// way a client is attached to a ring:
@@ -97,23 +97,8 @@ pub mod rings {
                 return;
             }
 
-            // Key point this loop allows the mutex to be
-            // unlocked from time to time.
-            loop {
-                {
-                    let lock = me.lock().unwrap();
 
-                    if let Some(handle) = &lock.handle {
-                        if handle.is_finished() {
-                            break;
-                        }
-                    }
-                }
-
-                thread::sleep(Duration::from_millis(100)); // sb. unlocked.
-            }
-            // Now we can join:
-            me.lock().unwrap().handle.take().unwrap().join().unwrap();
+	    Arc::get_mut(me).unwrap().get_mut().unwrap().handle.take().unwrap().join().unwrap()
         }
         ///
         /// Determine if a monitor should keep running:
@@ -132,11 +117,14 @@ pub mod rings {
     impl RingBufferInfo {
         #[cfg(target_os = "linux")]
         fn kill_pid(pid: u32) {
-            let sys_pid = Pid::from_u32(pid);
+            let sys_pid = pid as Pid;   // Pid::from_u32(pid);
             let mut s = sysinfo::System::new_all();
-            if let Some(process) = s.process(sys_pid) {
-                process.kill(); // Do the best we can.
+	    for (ppid, proc) in s.get_processes() {
+	    	if *ppid == sys_pid {
+		   proc.kill(sysinfo::Signal::Kill);
+		}
             }
+
         }
         #[cfg(not(target_os = "linux"))]
         fn kill_pid(_pid: u32) {} // Else can't on windows but need fn for compiler

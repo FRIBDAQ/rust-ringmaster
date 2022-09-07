@@ -13,9 +13,9 @@ repository = "https://gitlab.msu.edu/foxr/rust-ringmaster.git"
 
 [dependencies]
 nscldaq_ringbuffer = "0.6.0"
-clap = "=2.27.1"
 simple-logging = "2.0.2"
-sysinfo = "0.25.2"
 log = "0.4"
 whoami="1.2.1"
 portman_client="0.1.0"
+clap = "=2.27.1"
+sysinfo = "=0.13.4"
