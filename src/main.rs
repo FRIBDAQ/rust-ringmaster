@@ -167,10 +167,8 @@ fn handle_request(mut stream: TcpStream, options: &ProgramOptions, inventory: &S
                 // We need at least 4
                 // In this implementation, the comment is optional.
 
-                if request.len() < 4  {
-                    fail_request(&mut stream,
-                        "Unregister must have at least name, type, pid"
-                    );
+                if request.len() < 4 {
+                    fail_request(&mut stream, "Unregister must have at least name, type, pid");
                 } else {
                     let mut comment = String::from("");
                     if request.len() == 5 {
@@ -574,7 +572,7 @@ fn unregister_ring(
                 if ring_path.exists() {
                     if let Ok(_) = fs::remove_file(ring_path) {}
                 }
-                if let Ok(_) = stream.write_all(b"Ok\n") {}
+                if let Ok(_) = stream.write_all(b"OK\n") {}
                 if let Ok(_) = stream.flush() {}
                 if let Ok(_) = stream.shutdown(Shutdown::Both) {}
             }
@@ -613,7 +611,7 @@ fn register_ring(mut stream: &mut TcpStream, dir: &str, name: &str, inventory: &
             let full_path = String::from(full_path.to_str().unwrap());
             if let Ok(_map) = ringbuffer::RingBufferMap::new(&full_path) {
                 add_ring(name, &mut inventory);
-                if let Ok(_) = stream.write_all(b"Ok\n") {}
+                if let Ok(_) = stream.write_all(b"OK\n") {}
                 if let Ok(_) = stream.flush() {}
                 if let Ok(_) = stream.shutdown(Shutdown::Both) {}
             } else {
@@ -656,7 +654,7 @@ fn list_rings(mut stream: TcpStream, directory: &str, inventory: &SafeInventory)
 
     let mut inventory = inventory.lock().unwrap();
 
-    if let Ok(_) = stream.write_all(b"Ok\n") {
+    if let Ok(_) = stream.write_all(b"OK\n") {
         let mut listing = tcllist::TclList::new();
         for name in inventory.keys() {
             if let Ok(ring_info) = get_ring_list_info(directory, name) {
@@ -833,7 +831,7 @@ fn min_gettable(status: &ringbuffer::RingStatus) -> usize {
             result = item.available
         }
     }
-    if result == 0xffffffffffffffff as usize  {
+    if result == 0xffffffffffffffff as usize {
         // no consumers likely
         result = 0;
     }

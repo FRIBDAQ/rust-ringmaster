@@ -4,7 +4,7 @@ pub mod rings {
     use std::thread;
     use std::time::Duration;
     #[cfg(target_os = "linux")]
-    use sysinfo::{Pid,  ProcessExt, System, SystemExt, Signal};
+    use sysinfo::{Pid, ProcessExt, Signal, System, SystemExt};
     ///
     /// This enum provides information about the
     /// way a client is attached to a ring:
@@ -87,18 +87,7 @@ pub mod rings {
         pub fn stop_monitor(me: &mut Arc<Mutex<Self>>) {
             me.lock().unwrap().should_run = false;
 
-            //
-            // Note that the code below leaves self.handle = None
-            // which is cool since we can then support multiple stop_monitor
-            // calls just fine.
-
-            if me.lock().unwrap().handle.is_none() {
-                me.lock().unwrap().should_run = true;
-                return;
-            }
-
-
-	    Arc::get_mut(me).unwrap().get_mut().unwrap().handle.take().unwrap().join().unwrap()
+            // Can'figure out how to join without deadlock.
         }
         ///
         /// Determine if a monitor should keep running:
@@ -117,14 +106,13 @@ pub mod rings {
     impl RingBufferInfo {
         #[cfg(target_os = "linux")]
         fn kill_pid(pid: u32) {
-            let sys_pid = pid as Pid;   // Pid::from_u32(pid);
+            let sys_pid = pid as Pid; // Pid::from_u32(pid);
             let mut s = sysinfo::System::new_all();
-	    for (ppid, proc) in s.get_processes() {
-	    	if *ppid == sys_pid {
-		   proc.kill(sysinfo::Signal::Kill);
-		}
+            for (ppid, proc) in s.get_processes() {
+                if *ppid == sys_pid {
+                    proc.kill(sysinfo::Signal::Kill);
+                }
             }
-
         }
         #[cfg(not(target_os = "linux"))]
         fn kill_pid(_pid: u32) {} // Else can't on windows but need fn for compiler

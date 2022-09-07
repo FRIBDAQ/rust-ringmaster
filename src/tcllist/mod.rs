@@ -10,7 +10,7 @@
 //! individual entries or sublists.  Formatting is supported e.g.
 //!
 //! ```
-//!   use nscldaq_ringmaster::tcllist::tcllist::tcllist::*;
+//!   use nscldaq_ringmaster::tcllist::*;
 //!
 //!   let mut top_list = TclList::new();   
 //!   let mut inner_list = TclList::new();
