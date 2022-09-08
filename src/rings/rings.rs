@@ -2,7 +2,7 @@ pub mod rings {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     use std::thread;
-    use std::time::Duration;
+
     #[cfg(target_os = "linux")]
     use sysinfo::{Pid, ProcessExt, Signal, System, SystemExt};
     ///
