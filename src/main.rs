@@ -384,16 +384,28 @@ fn connect_consumer(
 fn connect_client(
     mut stream: TcpStream,
     dir: &str,
-    ring_name: &str,
+    ring: &str,
     connection_type: &str,
     pid: &str,
     _comment: &str, // Unusedi n this version.
     inventory: &SafeInventory,
 ) {
+    // Note the ring name will be encapsulated (by NSCLDAQ) in {}'s This
+    // is to allow ring names with meaningful Tcl chars ('like'[] or $).
+    // We're going to restrict ring names to not contain whitespace in this implementation
+
+    let mut ring_name = String::from(ring);
+
+    // Don't let an ill-formed ringname panic us:
+
+    if ring_name.len() > 2 {
+        ring_name = ring_name[1..ring_name.len() - 1].to_string();
+    }
+
     if !is_local_peer(&stream) {
         fail_request(&mut stream, "CONNECT must be from a local process");
     } else {
-        if let Some(ring) = inventory.lock().unwrap().get_mut(ring_name) {
+        if let Some(ring) = inventory.lock().unwrap().get_mut(&ring_name) {
             // Turn this into the ring path:
             let path = compute_ring_buffer_path(&dir, &ring_name);
             if let Ok(pid_value) = pid.parse::<u32>() {
@@ -570,7 +582,7 @@ fn unregister_ring(
                 //   Client checks it gets an OK response from the ring master
                 //      when unregistering.
                 //   Client deletes the ring.k
-                
+
                 if let Ok(_) = stream.write_all(b"OK\r\n") {}
                 if let Ok(_) = stream.flush() {}
                 if let Ok(_) = stream.shutdown(Shutdown::Both) {}
