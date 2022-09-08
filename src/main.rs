@@ -325,7 +325,7 @@ fn hookup_client(
     client: rings::rings::Client,
     inventory: &SafeInventory,
 ) -> Arc<Mutex<rings::rings::ClientMonitorInfo>> {
-    if let Ok(_) = stream.write_all(b"OK\n") {
+    if let Ok(_) = stream.write_all(b"OK\r\n") {
         if let Ok(_) = stream.flush() {}
     }
     let stream = stream.try_clone().unwrap();
@@ -455,7 +455,7 @@ fn disconnect_client(
                             info!("Scheduling stop of monitor");
                             ring_info.unregister_client(pid);
                             info!("Back from stop schedule");
-                            if let Ok(_) = stream.write_all(b"OK\n") {}
+                            if let Ok(_) = stream.write_all(b"OK\r\n") {}
                             if let Ok(_) = stream.flush() {}
                             if let Ok(_) = stream.shutdown(Shutdown::Both) {}
                         } else {
@@ -478,7 +478,7 @@ fn disconnect_client(
                             {
                                 if client_slot == slot {
                                     ring_info.unregister_client(pid);
-                                    if let Ok(_) = stream.write_all(b"OK\n") {}
+                                    if let Ok(_) = stream.write_all(b"OK\r\n") {}
                                     if let Ok(_) = stream.flush() {}
                                     if let Ok(_) = stream.shutdown(Shutdown::Both) {}
                                 } else {
@@ -535,7 +535,7 @@ fn disconnect_client(
 ///  *  If the file exists (has not been deleted by the invoker),
 ///     it will be deleted by us.
 ///
-/// On success "Ok\n" is emitted.  Regardess, the connectio is
+/// On success "Ok\r\n" is emitted.  Regardess, the connectio is
 /// closed after the request...if possible.
 ///
 /// #### Note
@@ -572,7 +572,7 @@ fn unregister_ring(
                 if ring_path.exists() {
                     if let Ok(_) = fs::remove_file(ring_path) {}
                 }
-                if let Ok(_) = stream.write_all(b"OK\n") {}
+                if let Ok(_) = stream.write_all(b"OK\r\n") {}
                 if let Ok(_) = stream.flush() {}
                 if let Ok(_) = stream.shutdown(Shutdown::Both) {}
             }
@@ -594,7 +594,7 @@ fn unregister_ring(
 /// *   The file representing the ring must exist and be a ring buffer.
 ///
 /// If all of that holds the ring is added to the inventory and
-/// an "OK\n" response is emitted.  Regardless, the connection is closed.
+/// an "OK\r\n" response is emitted.  Regardless, the connection is closed.
 ///
 fn register_ring(mut stream: &mut TcpStream, dir: &str, name: &str, inventory: &SafeInventory) {
     let mut inventory = inventory.lock().unwrap();
@@ -611,7 +611,7 @@ fn register_ring(mut stream: &mut TcpStream, dir: &str, name: &str, inventory: &
             let full_path = String::from(full_path.to_str().unwrap());
             if let Ok(_map) = ringbuffer::RingBufferMap::new(&full_path) {
                 add_ring(name, &mut inventory);
-                if let Ok(_) = stream.write_all(b"OK\n") {}
+                if let Ok(_) = stream.write_all(b"OK\r\n") {}
                 if let Ok(_) = stream.flush() {}
                 if let Ok(_) = stream.shutdown(Shutdown::Both) {}
             } else {
@@ -654,7 +654,7 @@ fn list_rings(mut stream: TcpStream, directory: &str, inventory: &SafeInventory)
 
     let mut inventory = inventory.lock().unwrap();
 
-    if let Ok(_) = stream.write_all(b"OK\n") {
+    if let Ok(_) = stream.write_all(b"OK\r\n") {
         let mut listing = tcllist::TclList::new();
         for name in inventory.keys() {
             if let Ok(ring_info) = get_ring_list_info(directory, name) {
@@ -669,7 +669,7 @@ fn list_rings(mut stream: TcpStream, directory: &str, inventory: &SafeInventory)
         if listing_string.len() >= 2 {
             listing_string = listing_string[1..listing_string.len() - 1].to_string();
         }
-        if let Ok(_) = stream.write_all(format!("{}\n", listing_string).as_bytes()) {}
+        if let Ok(_) = stream.write_all(format!("{}\r\n", listing_string).as_bytes()) {}
     }
     if let Ok(_) = stream.shutdown(Shutdown::Both) {}
 
@@ -712,7 +712,7 @@ fn hoist_data(
 
         // Output our success string and start the client program:
 
-        match stream.write_all(b"OK BINARY FOLLOWS\n") {
+        match stream.write_all(b"OK BINARY FOLLOWS\r\n") {
             Ok(_) => {
                 if let Err(e) = stream.flush() {
                     error!("Failed to flush BINARY FOLLOWS string {}", e);
@@ -873,7 +873,7 @@ fn read_request(reader: &mut BufReader<TcpStream>) -> Vec<String> {
 ///
 ///
 fn fail_request(stream: &mut TcpStream, reason: &str) {
-    if let Ok(_) = stream.write_all(format!("FAIL {}\n", reason).as_bytes()) {}
+    if let Ok(_) = stream.write_all(format!("FAIL {}\r\n", reason).as_bytes()) {}
     if let Ok(_) = stream.flush() {}
     if let Ok(_) = stream.shutdown(Shutdown::Both) {}
 }
