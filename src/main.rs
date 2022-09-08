@@ -663,7 +663,13 @@ fn list_rings(mut stream: TcpStream, directory: &str, inventory: &SafeInventory)
                 gone_rings.push(name.to_string()); // Destroying here invalidates iterator.
             }
         }
-        if let Ok(_) = stream.write_all(format!("{}\n", listing).as_bytes()) {}
+        // our rendering of sublists means that we really need to take off the first and last characters.
+
+        let mut listing_string = format!("{}", listing);
+        if listing_string.len() >= 2 {
+            listing_string = listing_string[1..listing_string.len() - 1].to_string();
+        }
+        if let Ok(_) = stream.write_all(format!("{}\n", listing_string).as_bytes()) {}
     }
     if let Ok(_) = stream.shutdown(Shutdown::Both) {}
 
