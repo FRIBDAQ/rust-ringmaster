@@ -562,16 +562,15 @@ fn unregister_ring(
                 info.remove_all();
                 inventory.remove(ring_name).unwrap();
 
-                // If the ring file exists, try to remove it
-                // Note we could be unprived and unable and that's ok
-
-                let mut ring_path = PathBuf::new();
-                ring_path.push(directory);
-                ring_path.push(ring_name);
-                let ring_path = ring_path.as_path();
-                if ring_path.exists() {
-                    if let Ok(_) = fs::remove_file(ring_path) {}
-                }
+                // It's the client's responsibility to remove the ringbuffer
+                // file itself, otherwise we could be a securit hole
+                // that allows people to remove rings they can't.
+                // The correct sequence is :
+                //   Client checks the ring file is deletable.
+                //   Client checks it gets an OK response from the ring master
+                //      when unregistering.
+                //   Client deletes the ring.k
+                
                 if let Ok(_) = stream.write_all(b"OK\r\n") {}
                 if let Ok(_) = stream.flush() {}
                 if let Ok(_) = stream.shutdown(Shutdown::Both) {}
