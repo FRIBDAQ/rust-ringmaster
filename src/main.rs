@@ -157,7 +157,7 @@ fn handle_request(mut stream: TcpStream, options: &ProgramOptions, inventory: &S
                         "UNREGISTER must have only a ring name parameter",
                     );
                 } else {
-                    unregister_ring(&mut stream, &dir, &request[1], inventory);
+                    unregister_ring(&mut stream, &request[1], inventory);
                 }
             }
             "CONNECT" => {
@@ -577,7 +577,6 @@ fn disconnect_client(
 ///
 fn unregister_ring(
     stream: &mut TcpStream,
-    directory: &str,
     ring_name: &str,
     inventory: &SafeInventory,
 ) {
@@ -897,7 +896,7 @@ fn line_to_words(line: &str) -> Vec<String> {
 fn read_request(reader: &mut BufReader<TcpStream>) -> Vec<String> {
     let mut result = Vec::<String>::new();
     let mut request_line = String::new();
-    if let Ok(len) = reader.read_line(&mut request_line) {
+    if let Ok(_) = reader.read_line(&mut request_line) {
         result = line_to_words(&request_line);
     }
     result
