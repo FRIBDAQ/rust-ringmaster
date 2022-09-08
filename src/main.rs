@@ -12,6 +12,7 @@ use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process;
+use std::str;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -237,7 +238,10 @@ fn is_local_peer(stream: &TcpStream) -> bool {
 }
 /// monitor a client:
 ///  Set a read timeout on the stream.
-///  If there's input on the stream -- that's bad kill self.
+///  If there's input on the stream -- It's allowed to be a DISCONNECT
+///  in which we respond OK\n if it's the right stuff else
+///  FAIL invalid request and exit.,
+///
 ///  If asked to exit, that's bad so kill self.
 ///  Doing this requires a timeout on the reads from the stream.
 ///
@@ -255,10 +259,24 @@ fn monitor_client(
     let mut told_to_halt = false;
     loop {
         if client_info.lock().unwrap().keep_running() {
-            let mut b: [u8; 1] = [0];
-            match stream.lock().unwrap().read(&mut b) {
+            let mut b: [u8; 100] = [0; 100];
+            let status = stream.lock().unwrap().read(&mut b);
+            match status {
                 Ok(_n) => {
-                    // Actually any successful read is bad.
+                    if let Ok(request) = str::from_utf8(&b) {
+                        let request_words = line_to_words(&request);
+                        if request_words.len() > 0 {
+                            if request_words[0] == "DISCONNECT" {
+                                info!("DISCONNECT request for {}", ring);
+                                if let Ok(_n) = stream.lock().unwrap().write_all(b"OK\r\n") {}
+                                if let Ok(_) = stream.lock().unwrap().flush() {}
+                            } else {
+                                fail_request(&mut stream.lock().unwrap(), "Invalid request");
+                            }
+                        } else {
+                            fail_request(&mut stream.lock().unwrap(), "Invalid request");
+                        }
+                    } // If we don't get a textual request forget it.
                     break;
                 }
                 Err(e) => {
@@ -856,6 +874,20 @@ fn min_gettable(status: &ringbuffer::RingStatus) -> usize {
     }
     result
 }
+/// Split a line of text into words:
+///
+fn line_to_words(line: &str) -> Vec<String> {
+    let mut result = Vec::<String>::new();
+    for word in line
+        .to_string()
+        .trim()
+        .split(char::is_whitespace)
+        .collect::<Vec<&str>>()
+    {
+        result.push(word.to_string());
+    }
+    result
+}
 ///
 /// read a request line from the client and break it up into
 /// words which are returned as a vector.  If there's a problem
@@ -866,16 +898,7 @@ fn read_request(reader: &mut BufReader<TcpStream>) -> Vec<String> {
     let mut result = Vec::<String>::new();
     let mut request_line = String::new();
     if let Ok(len) = reader.read_line(&mut request_line) {
-        // Got a line-- maybe:
-        if len > 0 {
-            request_line = String::from(request_line.trim()); // Kills off the trailing \n too.
-            for word in request_line
-                .split(char::is_whitespace)
-                .collect::<Vec<&str>>()
-            {
-                result.push(String::from(word));
-            }
-        }
+        result = line_to_words(&request_line);
     }
     result
 }
