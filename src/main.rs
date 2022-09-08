@@ -774,18 +774,19 @@ fn start_hoister(
 ///
 fn format_ring_info(info: RingInfo) -> String {
     let mut result = tcllist::TclList::new();
-    result
-        .add_element(&info.name)
+    result.add_element(&info.name);
+    let mut ring_info = tcllist::TclList::new();
+    ring_info
         .add_element(&info.size.to_string())
         .add_element(&info.info.free_space.to_string())
         .add_element(&info.max_consumers.to_string());
 
     if info.info.producer_pid == ringbuffer::UNUSED_ENTRY {
-        result.add_element("-1");
+        ring_info.add_element("-1");
     } else {
-        result.add_element(&info.info.producer_pid.to_string());
+        ring_info.add_element(&info.info.producer_pid.to_string());
     }
-    result
+    ring_info
         .add_element(&info.info.max_queued.to_string())
         .add_element(&info.min_get.to_string());
 
@@ -799,7 +800,8 @@ fn format_ring_info(info: RingInfo) -> String {
             .add_element(&consumer.available.to_string());
         consumer_list.add_sublist(Box::new(consumer_info));
     }
-    result.add_sublist(Box::new(consumer_list));
+    ring_info.add_sublist(Box::new(consumer_list));
+    result.add_sublist(Box::new(ring_info));
     result.to_string()
 }
 /// get_ring_list_info
