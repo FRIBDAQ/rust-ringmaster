@@ -8,14 +8,13 @@ use nscldaq_ringmaster::rings::rings;
 //use simple_logging;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::str;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::io::*;
@@ -27,6 +26,7 @@ use std::os::unix::io::*;
 
 type RingInventory = HashMap<String, rings::rings::RingBufferInfo>;
 type SafeInventory = Arc<Mutex<RingInventory>>;
+type SafeStream = Arc<Mutex<TcpStream>>;
 struct RingInfo {
     name: String,
     size: usize,
@@ -75,7 +75,7 @@ fn main() {
         service_port
     );
 
-    server(service_port, &options, ring_inventory);
+    server(service_port, options, ring_inventory);
 }
 ///
 /// Main server function.  We make a listener, and process requests
@@ -86,17 +86,28 @@ fn main() {
 /// *   The directory so that we know where the ringbuffers are.
 /// *   A mutable reference to the ringbufer inventory to operate on.
 ///
-fn server(listen_port: u16, options: &ProgramOptions, ring_inventory: RingInventory) {
+fn server(listen_port: u16, options: ProgramOptions, ring_inventory: RingInventory) {
     let listener = TcpListener::bind(format!("0.0.0.0:{}", listen_port));
+    let sinventory = Arc::new(Mutex::new(ring_inventory));
     if let Err(l) = listener {
         error!("Failed to listen on {} : {}", listen_port, l.to_string());
         process::exit(-1);
     }
-    let ring_inventory = Arc::new(Mutex::new(ring_inventory));
     for client in listener.unwrap().incoming() {
         match client {
             Ok(stream) => {
-                handle_request(stream, options, &ring_inventory);
+                let sstream = Arc::new(Mutex::new(stream));
+                let client_stream = Arc::clone(&sstream);
+                let client_inventory = Arc::clone(&sinventory);
+                let thread_options = options.clone();
+                thread::spawn(move || {
+                    handle_request(
+                        client_stream,
+                        thread_options.directory,
+                        thread_options.portman,
+                        client_inventory,
+                    )
+                });
             }
             Err(e) => {
                 error!("Failed to accept a client: {}", e.to_string());
@@ -106,9 +117,7 @@ fn server(listen_port: u16, options: &ProgramOptions, ring_inventory: RingInvent
     }
 }
 /// handle a client request.
-/// With the exception of CONNECT, all of the requests are state-less,
-/// by that I mean that after the request is completed, the connection is
-/// dropped.  Requests are single line entities and replies are all textual
+/// With the exception of CONNECT  Requests are single line entities and replies are all textual
 /// as well in  a single line -- with the exception of REMOTE which is
 /// wonky.
 ///
@@ -117,110 +126,183 @@ fn server(listen_port: u16, options: &ProgramOptions, ring_inventory: RingInvent
 /// functions specific to the request.  Those functions are expected to
 /// reply to the client and, if necessary, shutdown the stream.
 ///
-fn handle_request(mut stream: TcpStream, options: &ProgramOptions, inventory: &SafeInventory) {
+fn handle_request(client_stream: SafeStream, dir: String, portman: u16, inventory: SafeInventory) {
+    // We can hang on to the stream:
+
+    let mut stream = client_stream.lock().unwrap();
+
     // To read a line, make a BufReader as we've done in other.  We'll then
     // use get_request to read the line and return the busted up request
     // as a vector of strings.
 
-    let dir = String::from(options.directory.as_str()); // Crazy strings don't copy
+    let mut pid = ringbuffer::UNUSED_ENTRY; // Records register pid
+
+    // This map will record the CONNECT/DISCONNECT operations done
+    // by the client.  Note that REMOTE must be done by a remote
+    // client and hence will not every have any connections (whew):
+    //
+    // This is used to kill off any slot reservations the client
+    // has made if it closes the connection (presumed dead).
+    // clients making CONNECT/DISCONNECT are obligatd to hold the
+    // connection until they're done with what they've connected to.
+    //
+    // The key is the path to a ringbuffer and the value is
+    // a vector of Client objects which record producer/consumer
+    // information for the client.
+    //
+    // CONNECT obviously add to this and DISCONNECT obviously removes from
+    // this.
+
+    let mut connections = HashMap::<String, Vec<rings::rings::Client>>::new();
+
     let mut reader = BufReader::new(stream.try_clone().unwrap());
-    let request = read_request(&mut reader);
-    if request.len() > 0 {
-        match request[0].as_str() {
-            "LIST" => {
-                info!("List request from {}", stream.peer_addr().unwrap());
-                if request.len() != 1 {
-                    fail_request(&mut stream, "LIST does not take any parameters");
-                } else {
-                    list_rings(stream, &dir, inventory);
-                }
-            }
-            "REGISTER" => {
-                info!(
-                    "Register request from {} (will enforce locality",
-                    stream.peer_addr().unwrap()
-                );
-                if request.len() != 2 {
-                    fail_request(&mut stream, "REGISTER must have only a ring name parameter");
-                } else {
-                    register_ring(&mut stream, &dir, &request[1], inventory);
-                }
-            }
-            "UNREGISTER" => {
-                info!(
-                    "Unregister request from {} will enforce locality",
-                    stream.peer_addr().unwrap()
-                );
-                if request.len() != 2 {
-                    fail_request(
-                        &mut stream,
-                        "UNREGISTER must have only a ring name parameter",
-                    );
-                } else {
-                    unregister_ring(&mut stream, &request[1], inventory);
-                }
-            }
-            "CONNECT" => {
-                info!(
-                    "Connect request from {} will enforce locality",
-                    stream.peer_addr().unwrap()
-                );
-                // We need at least 4
-                // In this implementation, the comment is optional.
 
-                if request.len() < 4 {
-                    fail_request(&mut stream, "Unregister must have at least name, type, pid");
-                } else {
-                    let mut comment = String::from("");
-                    if request.len() == 5 {
-                        comment = String::from(request[4].as_str());
+    // Note in the loop below, fail_request will close shtudown the
+    // stream which wil cause the next read_request to return an empty vector.
+
+    loop {
+        let request = read_request(&mut reader);
+        if request.len() > 0 {
+            match request[0].as_str() {
+                "LIST" => {
+                    info!("List request from {}", stream.peer_addr().unwrap());
+                    if request.len() != 1 {
+                        fail_request(&mut stream, "LIST does not take any parameters");
+                    } else {
+                        list_rings(&mut *stream, &dir, &inventory);
                     }
-                    connect_client(
-                        stream,
-                        &dir,
-                        &request[1],
-                        &request[2],
-                        &request[3],
-                        &comment,
-                        inventory,
+                }
+                "REGISTER" => {
+                    info!(
+                        "Register request from {} (will enforce locality",
+                        stream.peer_addr().unwrap()
                     );
+                    if request.len() != 2 {
+                        fail_request(&mut stream, "REGISTER must have only a ring name parameter");
+                    } else {
+                        register_ring(&mut *stream, &dir, &request[1], &inventory);
+                    }
                 }
-            }
-            "DISCONNECT" => {
-                info!(
-                    "Disconnect request from {} will enforce locality",
-                    stream.peer_addr().unwrap()
-                );
-                // We need a ring name, a connection type and a
-                // pid.  Eventually all of those get checked for Ok-ness.
+                "UNREGISTER" => {
+                    info!(
+                        "Unregister request from {} will enforce locality",
+                        stream.peer_addr().unwrap()
+                    );
+                    if request.len() != 2 {
+                        fail_request(
+                            &mut stream,
+                            "UNREGISTER must have only a ring name parameter",
+                        );
+                    } else {
+                        unregister_ring(&mut *stream, &request[1], &inventory);
+                    }
+                }
+                "CONNECT" => {
+                    info!(
+                        "Connect request from {} will enforce locality",
+                        stream.peer_addr().unwrap()
+                    );
+                    // We need at least 4
+                    // In this implementation, the comment is optional.
 
-                if request.len() != 4 {
-                    fail_request(&mut stream, "Invalid request length");
-                } else {
-                    disconnect_client(stream, &request[1], &request[2], &request[3], &inventory);
+                    if request.len() < 4 {
+                        fail_request(&mut stream, "Unregister must have at least name, type, pid");
+                    } else {
+                        let mut comment = String::from("");
+                        if request.len() == 5 {
+                            comment = String::from(request[4].as_str());
+                        }
+
+                        let result = connect_client(
+                            &mut *stream,
+                            &request[1],
+                            &request[2],
+                            &request[3],
+                            &comment,
+                            &inventory,
+                            &mut pid,
+                        );
+                        if let Some(client) = result {
+                            record_connection(
+                                &compute_ring_buffer_path(&dir, &request[1]),
+                                &mut connections,
+                                client,
+                            );
+                        }
+                    }
+                }
+                "DISCONNECT" => {
+                    info!(
+                        "Disconnect request from {} will enforce locality",
+                        stream.peer_addr().unwrap()
+                    );
+                    // We need a ring name, a connection type and a
+                    // pid.  Eventually all of those get checked for Ok-ness.
+
+                    if request.len() != 4 {
+                        fail_request(&mut stream, "Invalid request length");
+                    } else {
+                        let removed = disconnect_client(
+                            &mut *stream,
+                            &request[1],
+                            &request[2],
+                            &request[3],
+                            &inventory,
+                            &mut pid,
+                        );
+                        if let Some(client) = removed {
+                            unrecord_connection(
+                                &compute_ring_buffer_path(&dir, &request[1]),
+                                &mut connections,
+                                client,
+                            );
+                        }
+                    }
+                }
+                "REMOTE" => {
+                    // Note we don't enforce locality this could be
+                    // used by non NSCLDAQ programs to get a pipe from the ring.
+                    info!("Remote request from {}", stream.peer_addr().unwrap());
+                    if request.len() == 2 {
+                        hoist_data(&mut stream, &request[1], &dir, portman, &inventory);
+                        return;
+                    } else {
+                        fail_request(&mut stream, "Invalid request length");
+                    }
+                }
+                _ => {
+                    fail_request(&mut stream, "Invalid Request");
                 }
             }
-            "REMOTE" => {
-                // Note we don't enforce locality this could be
-                // used by non NSCLDAQ programs to get a pipe from the ring.
-                info!("Remote request from {}", stream.peer_addr().unwrap());
-                if request.len() == 2 {
-                    hoist_data(&mut stream, &request[1], &options, &inventory);
-                } else {
-                    fail_request(&mut stream, "Invalid request length");
-                }
-            }
-            _ => {
-                fail_request(&mut stream, "Invalid Request");
-            }
+        } else {
+            // Faiure... we can write a reply and shutdown but
+            // the other side might have already done that:
+            // These if-lets are just a fancy way to ignore Err's from
+            // their functions.
+            //
+            fail_request(&mut stream, "Empty request");
+            break;
         }
-    } else {
-        // Faiure... we can write a reply and shutdown but
-        // the other side might have already done that:
-        // These if-lets are just a fancy way to ignore Err's from
-        // their functions.
-        //
-        fail_request(&mut stream, "Empty request");
+    }
+    // release any slots held by oid if it's not ringbuffer::UNUSED_ENTRY.
+
+    for (ring_file, allocations) in connections {
+        if let Ok(mut ringmap) = ringbuffer::RingBufferMap::new(&ring_file) {
+           for a in allocations {
+                match a {
+                    rings::rings::Client::Consumer {slot, pid} => {
+                        if ringmap.consumer(slot as usize).unwrap().get_pid() == pid {
+                            if let Ok(_) = ringmap.free_consumer(slot as usize, pid) {}
+                        }
+                    },
+                    rings::rings::Client::Producer {pid} => {
+                        if ringmap.producer().get_pid() == pid {
+                            if let Ok(_) = ringmap.free_producer(pid) {}
+                        }
+                    }
+                }
+           } 
+        }
     }
 }
 ///
@@ -236,131 +318,18 @@ fn is_local_peer(stream: &TcpStream) -> bool {
         false
     }
 }
-/// monitor a client:
-///  Set a read timeout on the stream.
-///  If there's input on the stream -- It's allowed to be a DISCONNECT
-///  in which we respond OK\n if it's the right stuff else
-///  FAIL invalid request and exit.,
-///
-///  If asked to exit, that's bad so kill self.
-///  Doing this requires a timeout on the reads from the stream.
-///
-fn monitor_client(
-    stream: Arc<Mutex<TcpStream>>,
-    ring: &str,
-    client_info: Arc<Mutex<rings::rings::ClientMonitorInfo>>,
-    inventory: SafeInventory,
-) {
-    stream
-        .lock()
-        .unwrap()
-        .set_read_timeout(Some(Duration::from_secs(1)))
-        .unwrap();
-    let mut told_to_halt = false;
-    loop {
-        if client_info.lock().unwrap().keep_running() {
-            let mut b: [u8; 100] = [0; 100];
-            let status = stream.lock().unwrap().read(&mut b);
-            match status {
-                Ok(_n) => {
-                    if let Ok(request) = str::from_utf8(&b) {
-                        let request_words = line_to_words(&request);
-                        if request_words.len() > 0 {
-                            if request_words[0] == "DISCONNECT" {
-                                info!("DISCONNECT request for {}", ring);
-                                if let Ok(_n) = stream.lock().unwrap().write_all(b"OK\r\n") {}
-                                if let Ok(_) = stream.lock().unwrap().flush() {}
-                            } else {
-                                fail_request(&mut stream.lock().unwrap(), "Invalid request");
-                            }
-                        } else {
-                            fail_request(&mut stream.lock().unwrap(), "Invalid request");
-                        }
-                    } // If we don't get a textual request forget it.
-                    break;
-                }
-                Err(e) => {
-                    // Any time out error allows additional passes.
-                    match e.kind() {
-                        ErrorKind::WouldBlock => {}
-                        ErrorKind::TimedOut => {}
-                        _ => {
-                            break;
-                        }
-                    };
-                }
-            };
-        } else {
-            told_to_halt = true;
-            break;
-        }
-    }
-    if let Ok(_) = stream.lock().unwrap().shutdown(Shutdown::Both) {}
-    // Ensure the client has been removed from the ring - in case
-    // it failed:
-
-    let mut client_pid = 0;
-    if let Ok(mut map) = ringbuffer::RingBufferMap::new(&ring) {
-        match client_info.lock().unwrap().client_info {
-            rings::rings::Client::Producer { pid } => {
-                if let Ok(_) = map.free_producer(pid) {}
-                client_pid = pid;
-            }
-            rings::rings::Client::Consumer { pid, slot } => {
-                if let Ok(_) = map.free_consumer(slot as usize, pid) {}
-                client_pid = pid;
-            }
-        }
-    }
-
-    // Now we need to remove our monitor entry from the
-    // set of clients for this ring in the inventory.
-    // To do that we turn the ring back into a name
-    let ring_name = String::from(Path::new(ring).file_name().unwrap().to_str().unwrap());
-    if told_to_halt {
-        info!(
-            "Monitor thread for {} client of {} told to halt, cleaning up",
-            client_pid, ring_name
-        );
-    } else {
-        info!(
-            "Lost connection with {} client of ring {} cleaning up",
-            client_pid, ring_name
-        );
-    }
-    // We need to be tolerant of the possibility the
-    // ring went from our inventory:
-
-    if let Some(ring_info) = inventory.lock().unwrap().get_mut(&ring_name) {
-        ring_info.unlist_client(client_pid);
-    }
-    info!("Monitor thread stopping");
-}
 
 fn hookup_client(
-    mut stream: TcpStream,
-    ring: &str,
+    stream: &mut TcpStream,
     client: rings::rings::Client,
-    inventory: &SafeInventory,
 ) -> Arc<Mutex<rings::rings::ClientMonitorInfo>> {
-    if let Ok(_) = stream.write_all(b"OK\r\n") {
-        if let Ok(_) = stream.flush() {}
-    }
-    let stream = stream.try_clone().unwrap();
-    let stream = Arc::new(Mutex::new(stream));
     let monitor_info = rings::rings::ClientMonitorInfo::new(client);
     let safe_monitor = Arc::new(Mutex::new(monitor_info));
     let result = Arc::clone(&safe_monitor);
-    let ring = String::from(ring);
-    let thread_inventory = Arc::clone(inventory);
-    result.lock().unwrap().set_monitor(thread::spawn(move || {
-        monitor_client(
-            Arc::clone(&stream),
-            &ring,
-            Arc::clone(&safe_monitor),
-            thread_inventory,
-        );
-    }));
+
+    if let Ok(_) = stream.write_all(b"OK\r\n") {
+        if let Ok(_) = stream.flush() {}
+    }
     result
 }
 ///
@@ -369,25 +338,21 @@ fn hookup_client(
 /// as well as the way to unregister itself.
 ///
 fn connect_producer(
-    stream: TcpStream,
-    ring: &str,
+    stream: &mut TcpStream,
     pid: u32,
-    inventory: &SafeInventory,
 ) -> Arc<Mutex<rings::rings::ClientMonitorInfo>> {
     let client = rings::rings::Client::Producer { pid };
-    hookup_client(stream, ring, client, inventory)
+    hookup_client(stream, client)
 }
 ///
 ///  Connect a consumer to a ring.
 fn connect_consumer(
-    stream: TcpStream,
-    ring: &str,
+    stream: &mut TcpStream,
     slot: u32,
     pid: u32,
-    inventory: &SafeInventory,
 ) -> Arc<Mutex<rings::rings::ClientMonitorInfo>> {
     let client = rings::rings::Client::Consumer { pid, slot };
-    hookup_client(stream, ring, client, inventory)
+    hookup_client(stream, client)
 }
 /// connect a client to a ring:
 ///
@@ -400,55 +365,69 @@ fn connect_consumer(
 /// a monitor thread to watch for any client input or drop.
 ///
 fn connect_client(
-    mut stream: TcpStream,
-    dir: &str,
+    stream: &mut TcpStream,
     ring: &str,
     connection_type: &str,
     pid: &str,
     _comment: &str, // Unusedi n this version.
     inventory: &SafeInventory,
-) {
+    client_pid: &mut u32,
+) -> Option<rings::rings::Client> {
     // Note the ring name will be encapsulated (by NSCLDAQ) in {}'s This
     // is to allow ring names with meaningful Tcl chars ('like'[] or $).
     // We're going to restrict ring names to not contain whitespace in this implementation
 
     let mut ring_name = String::from(ring);
 
-    // Don't let an ill-formed ringname panic us:
+    // Don't let an ill-formed ringname panic us strips the {} off the
+    // ringname clients put there for the Tcl ringmaster.
 
     if ring_name.len() > 2 {
         ring_name = ring_name[1..ring_name.len() - 1].to_string();
     }
 
-    if !is_local_peer(&stream) {
-        fail_request(&mut stream, "CONNECT must be from a local process");
+    if !is_local_peer(stream) {
+        fail_request(stream, "CONNECT must be from a local process");
     } else {
         if let Some(ring) = inventory.lock().unwrap().get_mut(&ring_name) {
             // Turn this into the ring path:
-            let path = compute_ring_buffer_path(&dir, &ring_name);
+
             if let Ok(pid_value) = pid.parse::<u32>() {
+                // The pid must match the client_pid or it's a fail --
+                // unless the client pid is UNUSED_ENTRY:
+
+                if (pid_value != *client_pid) && (*client_pid != ringbuffer::UNUSED_ENTRY) {
+                    fail_request(stream, "PID spoof attempt");
+                    return None;
+                } else {
+                    *client_pid = pid_value;
+                }
                 let connection = connection_type.split(".").collect::<Vec<&str>>();
                 if connection.len() == 1 && connection[0] == "producer" {
-                    let client_info = connect_producer(stream, &path, pid_value, &inventory);
+                    let client_info = connect_producer(stream, pid_value);
                     ring.add_client(&Arc::clone(&client_info));
+                    let client = client_info.lock().unwrap().client_info;
+                    return Some(client);
                 } else if connection.len() == 2 && connection[0] == "consumer" {
                     if let Ok(slot) = connection[1].parse::<u32>() {
-                        let client_info =
-                            connect_consumer(stream, &path, slot, pid_value, &inventory);
+                        let client_info = connect_consumer(stream, slot, pid_value);
                         ring.add_client(&Arc::clone(&client_info));
+                        let client = client_info.lock().unwrap().client_info;
+                        return Some(client);
                     } else {
-                        fail_request(&mut stream, "Invalid consumer slot id");
+                        fail_request(stream, "Invalid consumer slot id");
                     }
                 } else {
-                    fail_request(&mut stream, "Invalid connection type");
+                    fail_request(stream, "Invalid connection type");
                 }
             } else {
-                fail_request(&mut stream, "Invalid process ID");
+                fail_request(stream, "Invalid process ID");
             }
         } else {
-            fail_request(&mut stream, "No such ringbuffer in inventory");
+            fail_request(stream, "No such ringbuffer in inventory");
         }
     }
+    None
 }
 ///
 ///  Disconnect a client from the ring.  In this case we ensure all
@@ -462,18 +441,26 @@ fn connect_client(
 /// in the ring's monitorlist.
 ///
 fn disconnect_client(
-    mut stream: TcpStream,
+    stream: &mut TcpStream,
     ring_name: &str,
     connection_type: &str,
     pid: &str,
     inventory: &SafeInventory,
-) {
+    client_pid: &mut u32,
+) -> Option<rings::rings::Client> {
     if !is_local_peer(&stream) {
-        fail_request(&mut stream, "DISCONNECT must be local");
+        fail_request(stream, "DISCONNECT must be local");
     } else {
         if let Ok(pid) = pid.parse::<u32>() {
-            // Deadlock below.  holding inventory locked while thread needs it.
-            //
+            // The pid must not be different from any other pid
+            // that registered use:
+
+            if pid != *client_pid && *client_pid != ringbuffer::UNUSED_ENTRY {
+                fail_request(stream, "Attemped spoof of pid");
+                return None;
+            } else {
+                *client_pid = pid
+            }
 
             if let Some(ring_info) = inventory.lock().unwrap().get_mut(ring_name) {
                 if let Some(client_info) = ring_info.get_client_info(&pid) {
@@ -488,9 +475,10 @@ fn disconnect_client(
                             if let Ok(_) = stream.write_all(b"OK\r\n") {}
                             if let Ok(_) = stream.flush() {}
                             if let Ok(_) = stream.shutdown(Shutdown::Both) {}
+                            return Some(rings::rings::Client::Producer { pid });
                         } else {
                             fail_request(
-                                &mut stream,
+                                stream,
                                 format!(
                                     "You gave me a producer spec but the actual client is a consumer"
                                 )
@@ -511,9 +499,10 @@ fn disconnect_client(
                                     if let Ok(_) = stream.write_all(b"OK\r\n") {}
                                     if let Ok(_) = stream.flush() {}
                                     if let Ok(_) = stream.shutdown(Shutdown::Both) {}
+                                    return Some(rings::rings::Client::Consumer { pid, slot });
                                 } else {
                                     fail_request(
-                                        &mut stream,
+                                        stream,
                                         format!(
                                             "Incorrect slot number for client {} : {}",
                                             pid, slot
@@ -522,40 +511,41 @@ fn disconnect_client(
                                     );
                                 }
                             } else {
-                                fail_request(&mut stream, "Expected consumer but got producer");
+                                fail_request(stream, "Expected consumer but got producer");
                             }
                         } else {
                             fail_request(
-                                &mut stream,
+                                stream,
                                 format!("Invalid consumer slot specification {}", client_spec[1])
                                     .as_str(),
                             );
                         }
                     } else {
                         fail_request(
-                            &mut stream,
+                            stream,
                             format!("Invalid client specification {}", connection_type).as_str(),
                         );
                     }
                 } else {
                     fail_request(
-                        &mut stream,
+                        stream,
                         format!("PID {} Is not a client in ring {}", pid, ring_name).as_str(),
                     );
                 }
             } else {
                 fail_request(
-                    &mut stream,
+                    stream,
                     format!("No ring named {} in inventory", ring_name).as_str(),
                 );
             }
         } else {
             fail_request(
-                &mut stream,
+                stream,
                 format!("PID must be parsable as an unsigned int but was {}", pid).as_str(),
             );
         }
     }
+    None
 }
 ///  unregister a ring that was deleted.
 ///  
@@ -575,11 +565,7 @@ fn disconnect_client(
 /// requestor to delete a ring-buffer file the requestor could not otherwise
 /// delete.
 ///
-fn unregister_ring(
-    stream: &mut TcpStream,
-    ring_name: &str,
-    inventory: &SafeInventory,
-) {
+fn unregister_ring(stream: &mut TcpStream, ring_name: &str, inventory: &SafeInventory) {
     let mut inventory = inventory.lock().unwrap();
     if is_local_peer(&stream) {
         // The inventory must contain the ring.  The file need not be present
@@ -624,12 +610,12 @@ fn unregister_ring(
 /// If all of that holds the ring is added to the inventory and
 /// an "OK\r\n" response is emitted.  Regardless, the connection is closed.
 ///
-fn register_ring(mut stream: &mut TcpStream, dir: &str, name: &str, inventory: &SafeInventory) {
+fn register_ring(stream: &mut TcpStream, dir: &str, name: &str, inventory: &SafeInventory) {
     let mut inventory = inventory.lock().unwrap();
     if is_local_peer(&stream) {
         if inventory.contains_key(name) {
             fail_request(
-                &mut stream,
+                stream,
                 format!("Ring {} has already been registered", name).as_str(),
             );
         } else {
@@ -643,14 +629,11 @@ fn register_ring(mut stream: &mut TcpStream, dir: &str, name: &str, inventory: &
                 if let Ok(_) = stream.flush() {}
                 if let Ok(_) = stream.shutdown(Shutdown::Both) {}
             } else {
-                fail_request(
-                    &mut stream,
-                    format!("{} is not a ringbuffer", name).as_str(),
-                );
+                fail_request(stream, format!("{} is not a ringbuffer", name).as_str());
             }
         }
     } else {
-        fail_request(&mut stream, "REGISTER Must come from a local host");
+        fail_request(stream, "REGISTER Must come from a local host");
     }
 }
 ///
@@ -677,7 +660,7 @@ fn register_ring(mut stream: &mut TcpStream, dir: &str, name: &str, inventory: &
 ///
 /// ##### Note
 ///    If the ring has disappeared, we clean, and any watches up.
-fn list_rings(mut stream: TcpStream, directory: &str, inventory: &SafeInventory) {
+fn list_rings(stream: &mut TcpStream, directory: &str, inventory: &SafeInventory) {
     let mut gone_rings = Vec::<String>::new();
 
     let mut inventory = inventory.lock().unwrap();
@@ -724,7 +707,8 @@ fn list_rings(mut stream: TcpStream, directory: &str, inventory: &SafeInventory)
 fn hoist_data(
     stream: &mut TcpStream,
     ring: &str,
-    options: &ProgramOptions,
+    dir: &str,
+    portman: u16,
     inventory: &SafeInventory,
 ) {
     // Validate that the ring is in our ring inventory:
@@ -733,9 +717,9 @@ fn hoist_data(
     let ring_exists = inventory.lock().unwrap().contains_key(ring);
     if ring_exists {
         let process_stdout = socket_to_stdio(stream);
-        let dir_arg = String::from(options.directory.as_str());
+        let dir_arg = String::from(dir);
         let ring_arg = String::from(ring);
-        let port_arg = options.portman.to_string();
+        let port_arg = portman.to_string();
         let comment_arg = format!("Hoisting to {}", stream.peer_addr().unwrap());
 
         // Output our success string and start the client program:
@@ -1127,6 +1111,78 @@ fn add_ring(name: &str, list: &mut HashMap<String, rings::rings::RingBufferInfo>
 fn log_non_ring(name: &str) {
     let filename = filename_from_path(name);
     info!("{} is not a ring buffer - ignored", filename);
+}
+//
+// Record a connection in the hash of connections that's in the
+// server thread:
+//
+fn record_connection(
+    ring_file: &str,
+    connections: &mut HashMap<String, Vec<rings::rings::Client>>,
+    client: rings::rings::Client,
+) {
+    let filename = String::from(ring_file);
+    if connections.contains_key(&filename) {
+        // Just need to add the entry to the back of the vector:
+
+        if let Some(entry) = connections.get_mut(&filename) {
+            entry.push(client);
+        }
+    } else {
+        let entry = vec![client];
+        connections.insert(filename, entry);
+    }
+}
+
+// remove a connection record from the hash of connections that's in a
+// server thread:
+
+fn unrecord_connection(
+    ring_file: &str,
+    connections: &mut HashMap<String, Vec<rings::rings::Client>>,
+    client: rings::rings::Client,
+) {
+    let filename = String::from(ring_file);
+
+    if let Some(entry) = connections.get_mut(&filename) {      
+        let mut found = false;
+        let mut i = 0;
+        for e in entry {
+            match client {
+                rings::rings::Client::Consumer { pid, slot } => {
+                    if let rings::rings::Client::Consumer {
+                        pid: epid,
+                        slot: eslot,
+                    } = e
+                    {
+                        if pid == *epid && slot == *eslot {
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+
+                rings::rings::Client::Producer { pid } => {
+                    if let rings::rings::Client::Producer { pid: epid } = e {
+                        if pid == *epid {
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            i = i + 1;
+        }
+        // If found is true, then i is the index to kill off:
+        // Entry got moved in the for loop so we need to re-find it.
+
+        if  found {
+            if let Some(entry) = connections.get_mut(&filename) {
+                entry.remove(i);
+            }
+        }
+
+    }
 }
 
 ///
