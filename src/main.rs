@@ -223,7 +223,11 @@ fn handle_request(client_stream: SafeStream, dir: String, portman: u16, inventor
                             &mut pid,
                         );
                         if let Some(client) = result {
-                            record_connection(&request[1], &mut connections, client);
+                            record_connection(
+                                &request[1],
+                                &mut connections,
+                                client,
+                            );
                         }
                     }
                 }
@@ -247,7 +251,11 @@ fn handle_request(client_stream: SafeStream, dir: String, portman: u16, inventor
                             &mut pid,
                         );
                         if let Some(client) = removed {
-                            unrecord_connection(&request[1], &mut connections, client);
+                            unrecord_connection(
+                                &request[1],
+                                &mut connections,
+                                client,
+                            );
                         }
                     }
                 }
@@ -1108,7 +1116,7 @@ fn record_connection(
 ) {
     let mut ringname = String::from(ring);
     if ringname.len() > 2 {
-        ringname = ringname[1..ringname.len() - 1].to_string();
+        ringname = ringname[1..ringname.len()-1].to_string();
     }
     if connections.contains_key(&ringname) {
         // Just need to add the entry to the back of the vector:
@@ -1132,13 +1140,13 @@ fn unrecord_connection(
 ) {
     let mut ringname = String::from(ring);
     if ringname.len() > 2 {
-        ringname = ringname[1..ringname.len() - 1].to_string();
+        ringname = ringname[1..ringname.len()-1].to_string();
     }
 
     if let Some(entry) = connections.get_mut(&ringname) {
         let mut found = false;
         let mut i = 0;
-
+        
         for e in entry {
             match client {
                 rings::rings::Client::Consumer { pid, slot } => {
