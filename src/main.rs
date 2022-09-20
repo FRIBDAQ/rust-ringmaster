@@ -288,20 +288,20 @@ fn handle_request(client_stream: SafeStream, dir: String, portman: u16, inventor
 
     for (ring_file, allocations) in connections {
         if let Ok(mut ringmap) = ringbuffer::RingBufferMap::new(&ring_file) {
-           for a in allocations {
+            for a in allocations {
                 match a {
-                    rings::rings::Client::Consumer {slot, pid} => {
+                    rings::rings::Client::Consumer { slot, pid } => {
                         if ringmap.consumer(slot as usize).unwrap().get_pid() == pid {
                             if let Ok(_) = ringmap.free_consumer(slot as usize, pid) {}
                         }
-                    },
-                    rings::rings::Client::Producer {pid} => {
+                    }
+                    rings::rings::Client::Producer { pid } => {
                         if ringmap.producer().get_pid() == pid {
                             if let Ok(_) = ringmap.free_producer(pid) {}
                         }
                     }
                 }
-           } 
+            }
         }
     }
 }
@@ -385,7 +385,7 @@ fn connect_client(
     if ring_name.len() > 2 {
         ring_name = ring_name[1..ring_name.len() - 1].to_string();
     }
-
+    info!("Connecting to '{} as {}", ring_name, connection_type);
     if !is_local_peer(stream) {
         fail_request(stream, "CONNECT must be from a local process");
     } else {
@@ -442,12 +442,18 @@ fn connect_client(
 ///
 fn disconnect_client(
     stream: &mut TcpStream,
-    ring_name: &str,
+    ring: &str,
     connection_type: &str,
     pid: &str,
     inventory: &SafeInventory,
     client_pid: &mut u32,
 ) -> Option<rings::rings::Client> {
+    // Trim the {} off the ring name:
+    let mut ring_name = String::from(ring);
+    if ring_name.len() > 2 {
+        ring_name = ring_name[1..ring_name.len() - 1].to_string();
+    }
+
     if !is_local_peer(&stream) {
         fail_request(stream, "DISCONNECT must be local");
     } else {
@@ -462,19 +468,17 @@ fn disconnect_client(
                 *client_pid = pid
             }
 
-            if let Some(ring_info) = inventory.lock().unwrap().get_mut(ring_name) {
+            if let Some(ring_info) = inventory.lock().unwrap().get_mut(&ring_name) {
                 if let Some(client_info) = ring_info.get_client_info(&pid) {
                     let client_spec = connection_type.split(".").collect::<Vec<&str>>();
                     if (client_spec.len() == 1) && (client_spec[0] == "producer") {
                         // Valid producer specification
                         let cinfo = client_info.lock().unwrap().client_info;
                         if let rings::rings::Client::Producer { pid: _client_pid } = cinfo {
-                            info!("Scheduling stop of monitor");
                             ring_info.unregister_client(pid);
-                            info!("Back from stop schedule");
                             if let Ok(_) = stream.write_all(b"OK\r\n") {}
                             if let Ok(_) = stream.flush() {}
-                            if let Ok(_) = stream.shutdown(Shutdown::Both) {}
+
                             return Some(rings::rings::Client::Producer { pid });
                         } else {
                             fail_request(
@@ -498,7 +502,6 @@ fn disconnect_client(
                                     ring_info.unregister_client(pid);
                                     if let Ok(_) = stream.write_all(b"OK\r\n") {}
                                     if let Ok(_) = stream.flush() {}
-                                    if let Ok(_) = stream.shutdown(Shutdown::Both) {}
                                     return Some(rings::rings::Client::Consumer { pid, slot });
                                 } else {
                                     fail_request(
@@ -588,7 +591,6 @@ fn unregister_ring(stream: &mut TcpStream, ring_name: &str, inventory: &SafeInve
 
                 if let Ok(_) = stream.write_all(b"OK\r\n") {}
                 if let Ok(_) = stream.flush() {}
-                if let Ok(_) = stream.shutdown(Shutdown::Both) {}
             }
         } else {
             fail_request(
@@ -627,7 +629,6 @@ fn register_ring(stream: &mut TcpStream, dir: &str, name: &str, inventory: &Safe
                 add_ring(name, &mut inventory);
                 if let Ok(_) = stream.write_all(b"OK\r\n") {}
                 if let Ok(_) = stream.flush() {}
-                if let Ok(_) = stream.shutdown(Shutdown::Both) {}
             } else {
                 fail_request(stream, format!("{} is not a ringbuffer", name).as_str());
             }
@@ -682,7 +683,6 @@ fn list_rings(stream: &mut TcpStream, directory: &str, inventory: &SafeInventory
         }
         if let Ok(_) = stream.write_all(format!("{}\r\n", listing_string).as_bytes()) {}
     }
-    if let Ok(_) = stream.shutdown(Shutdown::Both) {}
 
     // Kill off all the rings that failed to list (they died).
 
@@ -1144,7 +1144,7 @@ fn unrecord_connection(
 ) {
     let filename = String::from(ring_file);
 
-    if let Some(entry) = connections.get_mut(&filename) {      
+    if let Some(entry) = connections.get_mut(&filename) {
         let mut found = false;
         let mut i = 0;
         for e in entry {
@@ -1176,12 +1176,11 @@ fn unrecord_connection(
         // If found is true, then i is the index to kill off:
         // Entry got moved in the for loop so we need to re-find it.
 
-        if  found {
+        if found {
             if let Some(entry) = connections.get_mut(&filename) {
                 entry.remove(i);
             }
         }
-
     }
 }
 
