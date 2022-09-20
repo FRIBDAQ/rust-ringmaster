@@ -4,7 +4,7 @@ pub mod rings {
     use std::thread;
 
     #[cfg(target_os = "linux")]
-    use sysinfo::{Pid, ProcessExt, Signal, System, SystemExt};
+    use sysinfo::{Pid, ProcessExt, SystemExt};
     ///
     /// This enum provides information about the
     /// way a client is attached to a ring:
