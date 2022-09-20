@@ -223,11 +223,7 @@ fn handle_request(client_stream: SafeStream, dir: String, portman: u16, inventor
                             &mut pid,
                         );
                         if let Some(client) = result {
-                            record_connection(
-                                &request[1],
-                                &mut connections,
-                                client,
-                            );
+                            record_connection(&request[1], &mut connections, client);
                         }
                     }
                 }
@@ -247,15 +243,12 @@ fn handle_request(client_stream: SafeStream, dir: String, portman: u16, inventor
                             &request[1],
                             &request[2],
                             &request[3],
+                            &dir,
                             &connections,
                             &mut pid,
                         );
                         if let Some(client) = removed {
-                            unrecord_connection(
-                                &request[1],
-                                &mut connections,
-                                client,
-                            );
+                            unrecord_connection(&request[1], &mut connections, client);
                         }
                     }
                 }
@@ -443,6 +436,7 @@ fn disconnect_client(
     ring: &str,
     connection_type: &str,
     pid: &str,
+    dir: &str,
     connections: &HashMap<String, Vec<rings::rings::Client>>,
     client_pid: &mut u32,
 ) -> Option<rings::rings::Client> {
@@ -451,7 +445,8 @@ fn disconnect_client(
     if ring_name.len() > 2 {
         ring_name = ring_name[1..ring_name.len() - 1].to_string();
     }
-
+    let filename = compute_ring_buffer_path(dir, &ring_name);
+    info!("Ring buffer file {}", filename);
     if is_local_peer(&stream) {
         if let Some(registrations) = connections.get(&ring_name) {
             if let Ok(pid_num) = pid.parse::<u32>() {
@@ -478,6 +473,9 @@ fn disconnect_client(
                         if connection_exists(&client_info, &registrations) {
                             if let Ok(_) = stream.write_all(b"OK\r\n") {}
                             if let Ok(_) = stream.flush() {}
+                            if let Ok(mut map) = ringbuffer::RingBufferMap::new(&filename) {
+                                if let Ok(_) = map.free_producer(pid_num) {}
+                            }
                             return Some(client_info);
                         } else {
                             fail_request(
@@ -503,6 +501,9 @@ fn disconnect_client(
                             if connection_exists(&client_info, &registrations) {
                                 if let Ok(_) = stream.write_all(b"OK\r\n") {}
                                 if let Ok(_) = stream.flush() {}
+                                if let Ok(mut map) = ringbuffer::RingBufferMap::new(&filename) {
+                                    if let Ok(_) = map.free_consumer(slot_num as usize, pid_num) {}
+                                }
                                 return Some(client_info);
                             } else {
                                 fail_request(
@@ -1116,7 +1117,7 @@ fn record_connection(
 ) {
     let mut ringname = String::from(ring);
     if ringname.len() > 2 {
-        ringname = ringname[1..ringname.len()-1].to_string();
+        ringname = ringname[1..ringname.len() - 1].to_string();
     }
     if connections.contains_key(&ringname) {
         // Just need to add the entry to the back of the vector:
@@ -1140,13 +1141,13 @@ fn unrecord_connection(
 ) {
     let mut ringname = String::from(ring);
     if ringname.len() > 2 {
-        ringname = ringname[1..ringname.len()-1].to_string();
+        ringname = ringname[1..ringname.len() - 1].to_string();
     }
 
     if let Some(entry) = connections.get_mut(&ringname) {
         let mut found = false;
         let mut i = 0;
-        
+
         for e in entry {
             match client {
                 rings::rings::Client::Consumer { pid, slot } => {
