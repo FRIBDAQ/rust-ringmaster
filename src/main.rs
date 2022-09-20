@@ -612,10 +612,8 @@ fn register_ring(stream: &mut TcpStream, dir: &str, name: &str, inventory: &Safe
     let mut inventory = inventory.lock().unwrap();
     if is_local_peer(&stream) {
         if inventory.contains_key(name) {
-            fail_request(
-                stream,
-                format!("Ring {} has already been registered", name).as_str(),
-            );
+            if let Ok(_) = stream.write_all(b"OK\r\n") {}
+            if let Ok(_) = stream.flush() {}
         } else {
             let mut full_path = PathBuf::new();
             full_path.push(dir);
