@@ -576,24 +576,24 @@ fn unregister_ring(stream: &mut TcpStream, ring_name: &str, inventory: &SafeInve
                 info.remove_all();
                 inventory.remove(ring_name).unwrap();
 
-                // It's the client's responsibility to remove the ringbuffer
-                // file itself, otherwise we could be a securit hole
-                // that allows people to remove rings they can't.
-                // The correct sequence is :
-                //   Client checks the ring file is deletable.
-                //   Client checks it gets an OK response from the ring master
-                //      when unregistering.
-                //   Client deletes the ring.k
-
-                if let Ok(_) = stream.write_all(b"OK\r\n") {}
-                if let Ok(_) = stream.flush() {}
+                
+                
             }
-        } else {
-            fail_request(
-                stream,
-                format!("Ring named {} is not known", ring_name).as_str(),
-            );
         }
+        // It's the client's responsibility to remove the ringbuffer
+        // file itself, otherwise we could be a securit hole
+        // that allows people to remove rings they can't.
+        // The correct sequence is :
+        //   Client checks the ring file is deletable.
+        //   Client checks it gets an OK response from the ring master
+        //      when unregistering.
+        //   Client deletes the ring.k
+
+        // THe ring buffer does not need to be in our inventory so:
+
+        if let Ok(_) = stream.write_all(b"OK\r\n") {}
+        if let Ok(_) = stream.flush() {}
+        
     } else {
         fail_request(stream, "UNREGISTER request only legal from local peers");
     }
