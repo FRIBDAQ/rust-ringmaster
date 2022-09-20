@@ -162,6 +162,7 @@ fn handle_request(client_stream: SafeStream, dir: String, portman: u16, inventor
 
     loop {
         let request = read_request(&mut reader);
+        info!("Request : {:#?}", request);
         if request.len() > 0 {
             match request[0].as_str() {
                 "LIST" => {
@@ -297,6 +298,7 @@ fn handle_request(client_stream: SafeStream, dir: String, portman: u16, inventor
             }
         }
     }
+    info!("Socket service thread exiting");
 }
 ///
 /// Determine if a peer is local:
@@ -874,8 +876,10 @@ fn line_to_words(line: &str) -> Vec<String> {
 fn read_request(reader: &mut BufReader<TcpStream>) -> Vec<String> {
     let mut result = Vec::<String>::new();
     let mut request_line = String::new();
-    if let Ok(_) = reader.read_line(&mut request_line) {
-        result = line_to_words(&request_line);
+    if let Ok(n) = reader.read_line(&mut request_line) {
+        if n > 0 {
+            result = line_to_words(&request_line);
+        }
     }
     result
 }
