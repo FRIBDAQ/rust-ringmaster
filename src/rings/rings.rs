@@ -107,7 +107,7 @@ pub mod rings {
         #[cfg(target_os = "linux")]
         fn kill_pid(pid: u32) {
             let sys_pid = pid as Pid; // Pid::from_u32(pid);
-            let mut s = sysinfo::System::new_all();
+            let  s = sysinfo::System::new_all();
             for (ppid, proc) in s.get_processes() {
                 if *ppid == sys_pid {
                     proc.kill(sysinfo::Signal::Kill);
