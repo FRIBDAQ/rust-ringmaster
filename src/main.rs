@@ -280,7 +280,8 @@ fn handle_request(client_stream: SafeStream, dir: String, portman: u16, inventor
     }
     // release any slots held by oid if it's not ringbuffer::UNUSED_ENTRY.
 
-    for (ring_file, allocations) in connections {
+    for (ring_name, allocations) in connections {
+    	let ring_file = compute_ring_buffer_path(&dir, &ring_name);
         if let Ok(mut ringmap) = ringbuffer::RingBufferMap::new(&ring_file) {
             for a in allocations {
                 match a {
