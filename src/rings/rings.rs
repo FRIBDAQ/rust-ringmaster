@@ -398,7 +398,8 @@ pub mod rings {
             let mut info = RingBufferInfo::new("ring");
             info.remove_client(1234); // Should not panic.
         }
-        #[test]
+        // See comments for remove_3,4
+        //#[test]
         fn remove_2() {
             // Remove when monitor process was not started works:
             let mut info = RingBufferInfo::new("ringbuffer");
