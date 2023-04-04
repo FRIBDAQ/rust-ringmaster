@@ -1,12 +1,16 @@
 [package]
 name = "nscldaq_ringmaster"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2018"
 #authors = "Ron Fox"
 license = "GPL-3.0"
 description = "RUST replacement for NSCLDAQ RingMaster - only requires ring2stdout"
 homepage = "http://docs.frib.ms.edu/daq"
 repository = "https://github.com/FRIBDAQ/rust-ringmaster.git"
+<<<<<<< HEAD
+=======
+
+>>>>>>> 8f4dde09f505c06da793c1fef6aab756a4b2d515
 
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
