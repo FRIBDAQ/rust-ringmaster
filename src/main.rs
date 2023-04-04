@@ -575,9 +575,6 @@ fn unregister_ring(stream: &mut TcpStream, ring_name: &str, inventory: &SafeInve
             if let Some(info) = inventory.get_mut(ring_name) {
                 info.remove_all();
                 inventory.remove(ring_name).unwrap();
-
-                
-                
             }
         }
         // It's the client's responsibility to remove the ringbuffer
@@ -593,7 +590,6 @@ fn unregister_ring(stream: &mut TcpStream, ring_name: &str, inventory: &SafeInve
 
         if let Ok(_) = stream.write_all(b"OK\r\n") {}
         if let Ok(_) = stream.flush() {}
-        
     } else {
         fail_request(stream, "UNREGISTER request only legal from local peers");
     }
