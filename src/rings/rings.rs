@@ -437,7 +437,9 @@ pub mod rings {
             info.add_client(&arc_producer).remove_client(1234);
             assert_eq!(0, info.client_monitors.len());
         }
-        #[test]
+        // remove_4 also assumes that remove_all has synchronized with all monitors so it too
+        // is now invalid.
+        //#[test]
         fn remove_4() {
             // Remove all clients.. in this case two without any
             // actual monitor threads.
