@@ -3,8 +3,8 @@ pub mod rings {
     use std::sync::{Arc, Mutex};
     use std::thread;
 
-    #[cfg(target_os = "linux")]
-    use sysinfo::{Pid, ProcessExt, SystemExt};
+    
+    use sysinfo::{Pid, System};
     ///
     /// This enum provides information about the
     /// way a client is attached to a ring:
@@ -104,18 +104,16 @@ pub mod rings {
         client_monitors: HashMap<u32, Arc<Mutex<ClientMonitorInfo>>>,
     }
     impl RingBufferInfo {
-        #[cfg(target_os = "linux")]
+        
         fn kill_pid(pid: u32) {
-            let sys_pid = pid as Pid; // Pid::from_u32(pid);
-            let s = sysinfo::System::new_all();
-            for (ppid, proc) in s.get_processes() {
-                if *ppid == sys_pid {
-                    proc.kill(sysinfo::Signal::Kill);
-                }
+            let sys = System::new_all();
+            let process = sys.process(Pid::from_u32(pid));
+            if let Some(proc) = process {
+                proc.kill();
             }
+
         }
-        #[cfg(not(target_os = "linux"))]
-        fn kill_pid(_pid: u32) {} // Else can't on windows but need fn for compiler
+        
         ///
         ///  creates the object.  We initially have the ring file
         /// path and then an empty client monitors collection.
