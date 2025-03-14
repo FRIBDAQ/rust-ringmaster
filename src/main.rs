@@ -43,21 +43,29 @@ struct ProgramOptions {
     directory: String,
     log_filename: String,
 }
-
+static  SERVICE_NAME : &str = "RingMaster";
 fn main() {
     let options = process_options();
+    // If the ringmaster is  already running refuse to continue:
+
+    if ringmaster_running(options.portman) {
+        eprintln!("The ring master is already running/advertised");
+        std::process::exit(-1);
+    }
+    
     simple_logging::log_to_file(&options.log_filename, log::LevelFilter::Info).unwrap();
     info!("Ringmaster Options {:#?}", options);
     info!(
         "Ringmaster doing inventory of existing rings on {}",
         options.directory
     );
+    
     let ring_inventory = inventory_rings(&options.directory);
 
     info!("Obtaining port from portmanager...");
     let mut port_man = portman_client::Client::new(options.portman);
     let service_port: u16;
-    match port_man.get("RingMaster") {
+    match port_man.get(SERVICE_NAME) {
         Ok(p) => {
             service_port = p;
         }
@@ -1185,6 +1193,17 @@ fn unrecord_connection(
 }
 
 ///
+/// Check to see if the ring master is already running.:
+/// 
+/// Returns bool true - if RingMaster is advertised on the
+/// portman.
+///
+fn ringmaster_running(portman : u16) -> bool {
+    let mut portman_client  = portman_client::Client::new(portman);
+    let services = portman_client.find_by_service(SERVICE_NAME).expect("Port manager isn't running!");
+    return services.len() > 0;
+    
+}
 /// This function takes a TcpStream and turns it into
 /// an process::Stdio object.  How this is done is
 /// O/S specific but the result is not and allows us to
@@ -1204,3 +1223,4 @@ fn socket_to_stdio(socket: &TcpStream) -> process::Stdio {
     let sock = socket.as_raw_socket();
     unsafe { process::Stdio::from_raw_handle(sock as RawHandle) }
 }
+
