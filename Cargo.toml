@@ -5,7 +5,7 @@ edition = "2018"
 #authors = "Ron Fox"
 license = "GPL-3.0"
 description = "RUST replacement for NSCLDAQ RingMaster - only requires ring2stdout"
-homepage = "http://docs.frib.ms.edu/daq"
+homepage = "http://docs.frib.msu.edu/daq"
 repository = "https://github.com/FRIBDAQ/rust-ringmaster.git"
 
 
