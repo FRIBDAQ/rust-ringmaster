@@ -381,7 +381,7 @@ fn connect_client(
     if !is_local_peer(stream) {
         fail_request(stream, "CONNECT must be from a local process");
     } else {
-        if let Some(_) = inventory.lock().unwrap().get_mut(&ring_name) {
+        if let Some(info) = inventory.lock().unwrap().get_mut(&ring_name) {
             // Turn this into the ring path:
 
             if let Ok(pid_value) = pid.parse::<u32>() {
@@ -397,10 +397,24 @@ fn connect_client(
                 let connection = connection_type.split(".").collect::<Vec<&str>>();
                 if connection.len() == 1 && connection[0] == "producer" {
                     let client_info = connect_producer(stream, pid_value);
+                    info.add_client(&Arc::new(Mutex::new(
+                    nscldaq_ringmaster::rings::ClientMonitorInfo::new(
+                        nscldaq_ringmaster::rings::Client::Producer { pid: pid_value},
+                    ),
+                    )));
                     return Some(client_info);
                 } else if connection.len() == 2 && connection[0] == "consumer" {
                     if let Ok(slot) = connection[1].parse::<u32>() {
                         let client_info = connect_consumer(stream, slot, pid_value);
+                        
+                        info.add_client(&Arc::new(Mutex::new(
+                            nscldaq_ringmaster::rings::ClientMonitorInfo::new(
+                                nscldaq_ringmaster::rings::Client::Consumer {
+                                    pid: pid_value,
+                                    slot: slot as u32,
+                                },
+                            ),
+                        )));
                         return Some(client_info);
                     } else {
                         fail_request(stream, "Invalid consumer slot id");
@@ -1058,7 +1072,7 @@ fn load_initial_clients(directory: &str, inventory: &mut RingInventory) {
                 info!("Adding existing producer {} to ring {}", pid, name);
                 item.add_client(&Arc::new(Mutex::new(
                     nscldaq_ringmaster::rings::ClientMonitorInfo::new(
-                        nscldaq_ringmaster::rings::Client::Producer { pid },
+                        nscldaq_ringmaster::rings::Client::Producer { pid},
                     ),
                 )));
                 // now we need to look at the consumers:

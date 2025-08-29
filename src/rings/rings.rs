@@ -2,9 +2,12 @@ pub mod rings {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     use std::thread;
+    use sysinfo::{Pid, System, Signal};
 
-    
-    use sysinfo::{Pid, System};
+    // for debugging:
+
+    use log::info;
+
     ///
     /// This enum provides information about the
     /// way a client is attached to a ring:
@@ -106,11 +109,16 @@ pub mod rings {
     impl RingBufferInfo {
         
         fn kill_pid(pid: u32) {
+            
             let sys = System::new_all();
             let process = sys.process(Pid::from_u32(pid));
             if let Some(proc) = process {
-                proc.kill();
-            }
+                if let None = proc.kill_with(Signal::Term) {
+                    if let None = proc.kill_with(Signal::Interrupt) {
+                        proc.kill();
+                    }
+                }
+            } 
 
         }
         
@@ -146,9 +154,12 @@ pub mod rings {
             &mut self,
             client: &Arc<Mutex<ClientMonitorInfo>>,
         ) -> &mut RingBufferInfo {
+            
             let key = match client.lock().unwrap().client_info {
-                Client::Producer { pid } => pid,
-                Client::Consumer { pid, slot: _slot } => pid,
+                Client::Producer { pid } => 
+                    pid,
+                Client::Consumer { pid, slot: _slot } => 
+                    pid,
             };
             self.client_monitors.insert(key, Arc::clone(client));
 
@@ -190,13 +201,16 @@ pub mod rings {
         /// Convenience method to kill all clients.
         ///
         pub fn remove_all(&mut self) -> &mut RingBufferInfo {
+            
+            info!("Removing all clients");
             let mut pids: Vec<u32> = Vec::new();
             // Collect the pids:
             for pid in self.client_monitors.keys() {
                 pids.push(*pid);
             }
-
+            info!("{} pids will be removed", pids.len());
             for pid in pids {
+                info!("Going to remove client {}", pid);
                 self.remove_client(pid);
             }
 
