@@ -3,7 +3,8 @@ pub mod rings {
     use std::sync::{Arc, Mutex};
     use std::thread;
     use sysinfo::{Pid, System, Signal};
-
+    
+    //use log::info;
     ///
     /// This enum provides information about the
     /// way a client is attached to a ring:
@@ -175,7 +176,9 @@ pub mod rings {
         /// If the pid does not have an entry this is a silent no-op.
         ///
         pub fn unregister_client(&mut self, pid: u32) -> &mut RingBufferInfo {
+            
             if let Some(mut info) = self.client_monitors.remove(&pid) {
+                
                 ClientMonitorInfo::schedule_stop_monitor(&mut info)
             }
             self

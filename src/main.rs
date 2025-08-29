@@ -254,6 +254,7 @@ fn handle_request(client_stream: SafeStream, dir: String, portman: u16, inventor
                             &request[3],
                             &dir,
                             &connections,
+                            &inventory,
                             &mut pid,
                         );
                         if let Some(client) = removed {
@@ -463,6 +464,7 @@ fn disconnect_client(
     pid: &str,
     dir: &str,
     connections: &HashMap<String, Vec<rings::rings::Client>>,
+    inventory: &SafeInventory,
     client_pid: &mut u32,
 ) -> Option<rings::rings::Client> {
     // Trim the {} off the ring name:
@@ -473,90 +475,95 @@ fn disconnect_client(
     let filename = compute_ring_buffer_path(dir, &ring_name);
     info!("Ring buffer file {}", filename);
     if is_local_peer(&stream) {
-        if let Some(registrations) = connections.get(&ring_name) {
-            if let Ok(pid_num) = pid.parse::<u32>() {
-                // Must match the client pid if there is one:
+        if let Some(info) = inventory.lock().unwrap().get_mut(&ring_name) {
+            if let Some(registrations) = connections.get(&ring_name) {
+                if let Ok(pid_num) = pid.parse::<u32>() {
+                    // Must match the client pid if there is one:
 
-                if (pid_num != *client_pid) && (*client_pid != ringbuffer::UNUSED_ENTRY) {
-                    fail_request(stream, "attemped PID spoof");
-                } else {
-                    *client_pid = pid_num;
-                }
-
-                // Producer or consumer:
-
-                let connection_info: Vec<&str> = connection_type.split(".").collect();
-                if connection_info.len() == 1 {
-                    // producer.
-                    if connection_info[0] != "producer" {
-                        fail_request(
-                            stream,
-                            &format!("Connection type is invalid: {}", connection_info[0]),
-                        );
+                    if (pid_num != *client_pid) && (*client_pid != ringbuffer::UNUSED_ENTRY) {
+                        fail_request(stream, "attemped PID spoof");
                     } else {
-                        let client_info = rings::rings::Client::Producer { pid: pid_num };
-                        if connection_exists(&client_info, &registrations) {
-                            if let Ok(_) = stream.write_all(b"OK\r\n") {}
-                            if let Ok(_) = stream.flush() {}
-                            if let Ok(mut map) = ringbuffer::RingBufferMap::new(&filename) {
-                                if let Ok(_) = map.free_producer(pid_num) {}
-                            }
-                            return Some(client_info);
-                        } else {
+                        *client_pid = pid_num;
+                    }
+
+                    // Producer or consumer:
+
+                    let connection_info: Vec<&str> = connection_type.split(".").collect();
+                    if connection_info.len() == 1 {
+                        // producer.
+                        if connection_info[0] != "producer" {
                             fail_request(
                                 stream,
-                                &format!("{} is not the producer of {}", pid_num, ring_name),
+                                &format!("Connection type is invalid: {}", connection_info[0]),
                             );
-                        }
-                    }
-                } else if connection_info.len() == 2 {
-                    // Consumer.
-
-                    if connection_info[0] != "consumer" {
-                        fail_request(
-                            stream,
-                            &format!("Connection type is invalid: {}", connection_info[0]),
-                        );
-                    } else {
-                        if let Ok(slot_num) = connection_info[1].parse::<u32>() {
-                            let client_info = rings::rings::Client::Consumer {
-                                pid: pid_num,
-                                slot: slot_num,
-                            };
+                        } else {
+                            let client_info = rings::rings::Client::Producer { pid: pid_num };
+                            info.unregister_client(pid_num);
                             if connection_exists(&client_info, &registrations) {
                                 if let Ok(_) = stream.write_all(b"OK\r\n") {}
                                 if let Ok(_) = stream.flush() {}
                                 if let Ok(mut map) = ringbuffer::RingBufferMap::new(&filename) {
-                                    if let Ok(_) = map.free_consumer(slot_num as usize, pid_num) {}
+                                    if let Ok(_) = map.free_producer(pid_num) {}
                                 }
                                 return Some(client_info);
                             } else {
                                 fail_request(
                                     stream,
-                                    &format!(
-                                        "{} is not a consumer on slot {} of ring {}",
-                                        pid_num, slot_num, ring_name
-                                    ),
+                                    &format!("{} is not the producer of {}", pid_num, ring_name),
                                 );
                             }
-                        } else {
+                        }
+                    } else if connection_info.len() == 2 {
+                        // Consumer.
+
+                        if connection_info[0] != "consumer" {
                             fail_request(
                                 stream,
-                                &format!("Invalid slot number: {}", connection_info[1]),
+                                &format!("Connection type is invalid: {}", connection_info[0]),
                             );
+                        } else {
+                            if let Ok(slot_num) = connection_info[1].parse::<u32>() {
+                                info.unregister_client(pid_num);
+                                let client_info = rings::rings::Client::Consumer {
+                                    pid: pid_num,
+                                    slot: slot_num,
+                                };
+                                
+                                if connection_exists(&client_info, &registrations) {
+                                    if let Ok(_) = stream.write_all(b"OK\r\n") {}
+                                    if let Ok(_) = stream.flush() {}
+                                    if let Ok(mut map) = ringbuffer::RingBufferMap::new(&filename) {
+                                        if let Ok(_) = map.free_consumer(slot_num as usize, pid_num) {}
+                                    }
+                                    return Some(client_info);
+                                } else {
+                                    fail_request(
+                                        stream,
+                                        &format!(
+                                            "{} is not a consumer on slot {} of ring {}",
+                                            pid_num, slot_num, ring_name
+                                        ),
+                                    );
+                                }
+                            } else {
+                                fail_request(
+                                    stream,
+                                    &format!("Invalid slot number: {}", connection_info[1]),
+                                );
+                            }
                         }
+                    } else {
+                        fail_request(
+                            stream,
+                            &format!("Invalid connection type: {}", connection_type),
+                        );
                     }
                 } else {
                     fail_request(
                         stream,
-                        &format!("Invalid connection type: {}", connection_type),
+                        &format!("{} - pid must parse as an unsigned integer", pid),
                     );
                 }
-            } else {
-                fail_request(
-                    stream,
-                    &format!("{} - pid must parse as an unsigned integer", pid),
-                );
             }
         } else {
             fail_request(
@@ -785,7 +792,10 @@ fn start_hoister(
         .stdin(process::Stdio::null())
         .spawn();
     match hoister {
-        Ok(_) => {
+        Ok(mut p) => {
+            // Spin off a thread to wait on the child:
+
+            thread::spawn(move || {p.wait()});
             info!("Started hoister for {} : {}", ring_name, comment);
         }
         Err(e) => {
