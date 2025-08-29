@@ -2,9 +2,8 @@ pub mod rings {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     use std::thread;
+    use sysinfo::{Pid, System, Signal};
 
-    
-    use sysinfo::{Pid, System};
     ///
     /// This enum provides information about the
     /// way a client is attached to a ring:
@@ -106,11 +105,16 @@ pub mod rings {
     impl RingBufferInfo {
         
         fn kill_pid(pid: u32) {
+            
             let sys = System::new_all();
             let process = sys.process(Pid::from_u32(pid));
             if let Some(proc) = process {
-                proc.kill();
-            }
+                if let None = proc.kill_with(Signal::Term) {
+                    if let None = proc.kill_with(Signal::Interrupt) {
+                        proc.kill();
+                    }
+                }
+            } 
 
         }
         
@@ -146,9 +150,12 @@ pub mod rings {
             &mut self,
             client: &Arc<Mutex<ClientMonitorInfo>>,
         ) -> &mut RingBufferInfo {
+            
             let key = match client.lock().unwrap().client_info {
-                Client::Producer { pid } => pid,
-                Client::Consumer { pid, slot: _slot } => pid,
+                Client::Producer { pid } => 
+                    pid,
+                Client::Consumer { pid, slot: _slot } => 
+                    pid,
             };
             self.client_monitors.insert(key, Arc::clone(client));
 
@@ -195,7 +202,7 @@ pub mod rings {
             for pid in self.client_monitors.keys() {
                 pids.push(*pid);
             }
-
+            
             for pid in pids {
                 self.remove_client(pid);
             }
@@ -275,8 +282,7 @@ pub mod rings {
     #[cfg(test)]
     mod ringbuf_info_tests {
         use super::*;
-        use std::thread::sleep;
-        use std::time::Duration;
+        
         #[test]
         fn new_1() {
             let info = RingBufferInfo::new("ringname");
@@ -396,65 +402,6 @@ pub mod rings {
             let mut info = RingBufferInfo::new("ring");
             info.remove_client(1234); // Should not panic.
         }
-        // See comments for remove_3,4
-        //#[test]
-        fn remove_2() {
-            // Remove when monitor process was not started works:
-            let mut info = RingBufferInfo::new("ringbuffer");
-            let producer = ClientMonitorInfo::new(Client::Producer { pid: 1234 });
-            let arc_producer = Arc::new(Mutex::new(producer));
-            info.add_client(&arc_producer).remove_client(1234);
-
-            // Should be an empty client list:
-
-            assert_eq!(0, info.client_monitors.len());
-        }
-        // Disabling the test since we don't actually know how to join the
-        // monitor without a deadlock so there's a race condition
-        // between the call to remove_client and checking for the monitor
-        // having been removed
-        //#[test]
-        fn remove_3() {
-            // Remove stops the monitor:
-
-            let mut info = RingBufferInfo::new("ringbuffer");
-            let producer = ClientMonitorInfo::new(Client::Producer { pid: 1234 });
-            let arc_producer = Arc::new(Mutex::new(producer));
-            let child_producer = Arc::clone(&arc_producer);
-            arc_producer
-                .lock()
-                .unwrap()
-                .set_monitor(thread::spawn(move || loop {
-                    if child_producer.lock().unwrap().should_run {
-                        sleep(Duration::from_millis(100));
-                    } else {
-                        return;
-                    }
-                }));
-            // Now if we remove the client it should stop the thread.
-
-            info.add_client(&arc_producer).remove_client(1234);
-            assert_eq!(0, info.client_monitors.len());
-        }
-        // remove_4 also assumes that remove_all has synchronized with all monitors so it too
-        // is now invalid.
-        //#[test]
-        fn remove_4() {
-            // Remove all clients.. in this case two without any
-            // actual monitor threads.
-
-            let mut info = RingBufferInfo::new("ringbuffer");
-            let producer = ClientMonitorInfo::new(Client::Producer { pid: 4321 });
-            let consumer = ClientMonitorInfo::new(Client::Consumer { pid: 1234, slot: 2 });
-
-            let arc_producer = Arc::new(Mutex::new(producer));
-            let arc_consumer = Arc::new(Mutex::new(consumer));
-
-            info.add_client(&arc_producer)
-                .add_client(&arc_consumer)
-                .remove_all();
-
-            assert_eq!(0, info.client_monitors.len());
-        }
+        
     }
 }
