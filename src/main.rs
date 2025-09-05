@@ -564,11 +564,15 @@ fn disconnect_client(
                         &format!("{} - pid must parse as an unsigned integer", pid),
                     );
                 }
+            } else {
+                fail_request(stream,
+                    &format!("{} is not a client of {}", pid, ring_name)
+                );
             }
         } else {
             fail_request(
                 stream,
-                &format!("{} is not a ring name registered to PID {}", ring_name, pid),
+                &format!("pid {} is not a ring", ring_name),
             );
         }
     } else {
