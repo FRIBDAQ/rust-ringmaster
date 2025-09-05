@@ -1,5 +1,5 @@
 pub mod tcllist;
-use clap::{App, Arg};
+use clap::*;
 use log::{error, info};
 use nscldaq_ringbuffer::ringbuffer;
 use nscldaq_ringmaster::rings::inventory;
@@ -931,35 +931,36 @@ fn fail_request(stream: &mut TcpStream, reason: &str) {
 fn process_options() -> ProgramOptions {
     // Define the program options to Clap and process parameters with it:
 
-    let parser = App::new("ringmaster")
+    let parser = Command::new("ringmaster")
         .version("1.0")
         .author("Ron Fox")
         .about("Rust replacement for RingMaster -does not need containr")
         .arg(
-            Arg::with_name("portman")
-                .short("p")
+            Arg::new("portman")
+                .short('p')
                 .long("portman-port")
                 .value_name("PORTNUM")
                 .help("Port number on which the port manager is listening for connections")
-                .takes_value(true)
-                .default_value("30000"),
+                .action(ArgAction::Set)
+                .default_value("30000")
+                .value_parser(value_parser!(u16))
         )
         .arg(
-            Arg::with_name("directory")
-                .short("d")
+            Arg::new("directory")
+                .short('d')
                 .long("directory")
                 .value_name("PATH")
                 .help("Directory in which the ring bufffers live")
-                .takes_value(true)
+                .action(ArgAction::Set)
                 .default_value("/dev/shm"),
         )
         .arg(
-            Arg::with_name("log")
-                .short("l")
+            Arg::new("log")
+                .short('l')
                 .long("log-file")
                 .value_name("PATH")
                 .help("File used to log events")
-                .takes_value(true)
+                .action(ArgAction::Set)
                 .default_value("/var/log/nscldaq/ringmaster.log"),
         )
         .get_matches();
@@ -975,32 +976,27 @@ fn process_options() -> ProgramOptions {
 
     // listen port
 
-    if let Some(port) = parser.value_of("portman") {
-        if let Ok(port_value) = port.parse::<u16>() {
-            result.portman = port_value;
-        } else {
-            eprintln!("The value of --portman-port must be a 16 bit unsigned integer");
-            process::exit(-1);
-        }
+    if let Some(port) = parser.get_one::<u16>("portman") {
+        result.portman = *port;
     }
+    
     // Ring buffer directory:
 
-    if let Some(directory) = parser.value_of("directory") {
-        // Check that the directory supplied exists:
-
+    if let Some(directory) = parser.get_one::<String>("directory") {
         if fs::read_dir(directory).is_err() {
             eprintln!(
                 "The value of --directory must be an existing directory was {}",
                 directory
             );
             process::exit(-1);
-        } else {
-            result.directory = String::from(directory);
         }
+        result.directory = directory.clone();
     }
+        // Check that the directory supplied exists:
+
     // Log File:
 
-    if let Some(file) = parser.value_of("log") {
+    if let Some(file) = parser.get_one::<String>("log") {
         // We need to be able to write to the file.  the
         // only way I know how to do that is test open the file:
 
@@ -1009,6 +1005,7 @@ fn process_options() -> ProgramOptions {
         if f.is_err() {
             let error = f.err();
             eprintln!("Unable to open/create log file {} : {:?}", file, error);
+            process::exit(-1);
         } else {
             result.log_filename = String::from(file);
         }
