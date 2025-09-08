@@ -15,12 +15,11 @@ use std::process;
 use std::str;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use filedescriptor::FileDescriptor;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::io::*;
 
-#[cfg(target_os = "linux")]
-use std::os::unix::io::*;
 
 // types of convenience:
 
@@ -795,17 +794,15 @@ fn start_hoister(
         .stderr(process::Stdio::null())
         .stdin(process::Stdio::null())
         .spawn();
+    
     match hoister {
-        Ok(mut p) => {
-            // Spin off a thread to wait on the child:
-
-            thread::spawn(move || {p.wait()});
-            info!("Started hoister for {} : {}", ring_name, comment);
-        }
-        Err(e) => {
-            error!("Unable to spawn hoister process: {}", e);
-        }
-    }
+        Ok(mut child) => {
+            let _ = child.wait();
+        },
+        Err(reason) => error!("Failed to start ring2stdout: {}", reason),
+    };
+        
+    // Waits until the command completes/reaping the status etc.
 }
 
 /// Given a ring info struct, and it's name turns it into a Tcl list that
@@ -1237,15 +1234,17 @@ fn ringmaster_running(portman : u16) -> bool {
 /// which will require us to spin off a ring2stdout process
 /// To feed data from the ring to the remote requestor.
 ///
-#[cfg(target_os = "linux")]
 fn socket_to_stdio(socket: &TcpStream) -> process::Stdio {
-    let sock = socket.as_raw_fd();
-    unsafe { process::Stdio::from_raw_fd(sock) }
+    let sock = FileDescriptor::dup(socket).expect("Unable to dup socket");
+    sock.as_stdio().expect("Unable to convert fd -> stdio")
+    
 }
 
+/*
 #[cfg(target_os = "windows")]
 fn socket_to_stdio(socket: &TcpStream) -> process::Stdio {
     let sock = socket.as_raw_socket();
     unsafe { process::Stdio::from_raw_handle(sock as RawHandle) }
 }
 
+*/
