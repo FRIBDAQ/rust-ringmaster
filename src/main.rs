@@ -1239,12 +1239,3 @@ fn socket_to_stdio(socket: &TcpStream) -> process::Stdio {
     sock.as_stdio().expect("Unable to convert fd -> stdio")
     
 }
-
-/*
-#[cfg(target_os = "windows")]
-fn socket_to_stdio(socket: &TcpStream) -> process::Stdio {
-    let sock = socket.as_raw_socket();
-    unsafe { process::Stdio::from_raw_handle(sock as RawHandle) }
-}
-
-*/
