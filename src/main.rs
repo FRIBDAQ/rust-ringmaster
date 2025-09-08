@@ -17,8 +17,6 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use filedescriptor::FileDescriptor;
 
-#[cfg(target_os = "windows")]
-use std::os::windows::io::*;
 
 
 // types of convenience:
