@@ -1,6 +1,6 @@
 [package]
 name = "nscldaq_ringmaster"
-version = "0.2.13"
+version = "0.2.14"
 edition = "2018"
 #authors = "Ron Fox"
 license = "GPL-3.0"
@@ -12,11 +12,11 @@ repository = "https://github.com/FRIBDAQ/rust-ringmaster.git"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-nscldaq_ringbuffer = "0.8.7"
+nscldaq_ringbuffer = "0.8.9"
 simple-logging = "2.0.2"
-log = "0.4.28"
-whoami="1.1.3"
+log = "0.4.29"
+whoami="2.1.1"
 portman_client="0.2.0"
-clap = "4.5.47"
-sysinfo = "0.37.0"
+clap = "4.6.0"
+sysinfo = "0.38.4"
 filedescriptor = "0.8.3"
