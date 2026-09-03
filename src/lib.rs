@@ -36,6 +36,14 @@
 //! which is where Linux keeps its POSIX shared memory regions.
 //! *   --log-file   - The file in which the ring master will make its
 //! logs.
+//! 
+//! An additional requrement, to hoist data to remote systems
+//! (to support the REMOTE command below), the program ring2stdout
+//! must be in the PATH of the ringmaster when it runs.  This program
+//! is available via the rust crates.io infrastructure at:
+//! 
+//! [https://crates.io/crates/ring2stdout](https://crates.io/crates/ring2stdout)
+//! 
 //!      
 //! ## Ringmaster Application Protocol
 //!
