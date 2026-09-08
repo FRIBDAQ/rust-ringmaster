@@ -16,7 +16,7 @@ use std::str;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use filedescriptor::FileDescriptor;
-
+use std::env;
 
 
 // types of convenience:
@@ -777,7 +777,9 @@ fn start_hoister(
     portman: &str,
     comment: &str,
 ) {
-    let hoister = process::Command::new("ring2stdout")
+    let ring2stdout = choose_ring2stdout();
+
+    let hoister = process::Command::new(ring2stdout)
         .args(&[
             "--directory",
             rings_dir,
@@ -1236,4 +1238,53 @@ fn socket_to_stdio(socket: &TcpStream) -> process::Stdio {
     let sock = FileDescriptor::dup(socket).expect("Unable to dup socket");
     sock.as_stdio().expect("Unable to convert fd -> stdio")
     
+}
+
+///
+/// Determine what string to use for ring2stdout in the 
+/// Process::command that runs it:
+/// -  If there's a ring2stdout in the same directory as
+///    the ringmaster (us), then return its full path.
+/// -  If there's a ring2stdout in the current working
+///    directory return that full path.
+/// -  If none of the abovce are true, then return "ring2stdout"
+///    so that Process::command will look for it in the path.
+fn choose_ring2stdout() -> String {
+    // Check in the installation directory:
+
+    let ringmaster_full_path = env::current_exe()
+                            .expect("Could not get ringmaster full path ");
+    let ringmaster_abspath = ringmaster_full_path.canonicalize()
+                            .expect("Could not canonicalize the ringmaster path");
+    let ringmaster_dir     = ringmaster_abspath.parent()
+                            .expect("Could not get the ringmaster program directory");
+    if let Some(local) = is_ring2stdout_here(&ringmaster_dir) {
+        return local;
+    }
+    
+    // Look for it in the current default directory...
+
+    let cwd = env::current_dir().expect("Could not get the current working dir");
+    if let Some(localprogram) = is_ring2stdout_here(&cwd) {
+        return localprogram;
+    }
+
+    // None, so just return "ring2stdout" so the path is searched.
+
+    String::from ("ring2stdout")
+}
+/// If ring2stdout is in the canonicalized version of the Path passed in,
+/// return Ok with the full path string as the payload. Otherwise,
+/// None.
+/// 
+fn is_ring2stdout_here(path : &Path) -> Option<String> {
+    let ring2stdoutpb  = path.join("ring2stdout");
+    let ring2stdout    = ring2stdoutpb.as_path();
+    if ring2stdout.exists() {
+        Some(String::from(ring2stdout
+            .as_os_str()
+            .to_string_lossy()))
+    } else {
+        None
+    }
 }
