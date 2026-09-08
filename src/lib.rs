@@ -39,7 +39,14 @@
 //! 
 //! An additional requrement, to hoist data to remote systems
 //! (to support the REMOTE command below), the program ring2stdout
-//! must be in the PATH of the ringmaster when it runs.  This program
+//! must be findable by the program.  It is searched for in the following
+//! locations in the order below:
+//! 
+//! *  The installation location of the ringmaster.
+//! *  The cwd at the time the ringmaster is run.
+//! *  The PATH of the ringmaster.
+//! 
+//! This program
 //! is available via the rust crates.io infrastructure at:
 //! 
 //! [https://crates.io/crates/ring2stdout](https://crates.io/crates/ring2stdout)
